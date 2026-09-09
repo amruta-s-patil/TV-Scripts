@@ -124,18 +124,26 @@ The point is that in a high-VIX session an OTM option can lose money on a correc
 
 ### 3.9 Open interest (companion script)
 
-OI is the number of contracts outstanding at each strike. Rising call OI means fresh call writing, which builds resistance; rising put OI means put writing, which builds support. The table reads the chain around ATM and summarises the day.
+OI is the number of contracts outstanding at each strike. Rising OI alone does not say who is trading it — the same rise means fresh writing (a wall) if the premium fell, or fresh buying (a punt) if the premium rose. Each leg is read against its own premium move into one of four actions:
+
+| **Action** | **OI change** | **Premium change** | **Meaning** |
+|:---|:---|:---|:---|
+| Writing | Up | Down | Fresh sellers — builds a wall (call writing = resistance, put writing = support) |
+| Buildup | Up | Up | Fresh buyers taking a directional punt |
+| Covering | Down | Up | Writers buying back — the wall is being removed |
+| Unwinding | Down | Down | Longs closing out |
 
 | **Reading** | **Interpretation** |
 |:---|:---|
-| CE Δ positive (red) | Call writing at that strike — sellers expect price to stay below it |
-| PE Δ positive (green) | Put writing — sellers expect price to hold above it |
-| Res / Sup | Strike with the highest total CE / PE open interest |
-| CE wr / PE wr | Strike where the most OI was ADDED today. Usually more relevant intraday than total OI. |
+| Signal column | Whichever leg (CE or PE) moved the most OI at that strike, tagged with its action, e.g. "CE writing" or "PE covering" |
+| Res / Sup | Strike with the highest total CE / PE open interest, across the whole chain |
 | PCR | Put-call ratio of total OI. Above 1.2 leans bullish, below 0.8 bearish. A blunt measure — use it as background, not a trigger. |
-| Buildup | Futures OI change against the day's price move: long buildup, short buildup, short covering, or long unwinding. |
+| Chain bias | Every leg's action is signed bullish/bearish and weighted by the OI it moved, then summed across the whole chain — not just total OI change — and cross-checked against PCR: "confirmed" when they agree, "PCR disagrees" when they don't |
+| Buildup (futures) | Futures OI change against the day's price move: long buildup, short buildup, short covering, or long unwinding |
 
-If your TradingView plan has no NSE F&O OI entitlement, `oi_chain.py` prints the same table from NSE's public endpoint, and `oi_desktop.py` keeps it on screen.
+The optional Shark hunting matrix shows this per-leg action for every strike in the window (`--shark` on the command line, or the "shark" checkbox in the desktop app), plus a net verdict and a PIN/VAC flag: PIN means both legs are genuinely being written (the strike is pinned), VAC means both are shrinking (the walls are coming off).
+
+If your TradingView plan has no NSE F&O OI entitlement, `oi_chain.py` prints the same table from NSE's public endpoint. `oi_desktop.py` is the same data as a small always-on-top window instead of a terminal dump: pick the symbol (NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY) and expiry, set how many strikes each side of ATM and the auto-refresh interval, and it polls NSE on its own, pausing automatically once the feed's own timestamp shows the market closed.
 
 ## 4. How a signal is produced
 
@@ -269,7 +277,7 @@ Nine alert conditions are exposed. The first three are the ones to actually set:
 | Signals cluster in chop | Raise the cross-index pivot length from 8 to 10 or 12, increase the cooldown, and turn on "Block entries while compressed". |
 | Stops feel too tight | Raise the minimum stop distance above 20 points. Nifty 3-minute noise can exceed 20 points in a volatile session. |
 | Too many context markers on screen | Turn off "Mark injection / belan candles" and "Mark shark / whale flags" under the GTI group. The entry logic is unaffected. |
-| Option chain shows n/a everywhere | The expiry is wrong (check the weekday setting, or use Manual for a holiday-shifted week), or your TradingView plan does not include NSE option OI data. Fall back to `oi_chain.py`. |
+| Option chain shows n/a everywhere | The expiry is wrong (check the weekday setting, or use Manual for a holiday-shifted week), or your TradingView plan does not include NSE option OI data. Fall back to `oi_chain.py` or `oi_desktop.py`. |
 | "Too many request calls" error | Reduce "Strikes each side of ATM" to 2 in the companion script. Do not merge the two scripts back into one. |
 
 ## 10. Limitations and risk

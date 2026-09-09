@@ -98,23 +98,30 @@ def front_expiry(expiries, now=None):
 
 
 def chain(rec):
-    """Every strike of the fetched expiry, not just the display window."""
+    """Every strike of the fetched expiry, not just the display window.
+    Same row shape as rows(), so totals() can take either."""
     out = []
     for r in rec.get("data", []):
         ce, pe = r.get("CE", {}), r.get("PE", {})
         k = ce.get("strikePrice", pe.get("strikePrice"))
         out.append((k, ce.get("openInterest", 0), ce.get("changeinOpenInterest", 0),
-                    pe.get("openInterest", 0), pe.get("changeinOpenInterest", 0)))
+                    pe.get("openInterest", 0), pe.get("changeinOpenInterest", 0),
+                    ce.get("lastPrice", 0), pe.get("lastPrice", 0),
+                    ce.get("change", 0), pe.get("change", 0)))
     return out
 
 
 def totals(ch):
     """Chain-wide read: OI sums, PCR, and the true max-OI strikes (Res / Sup)."""
     if not ch:
-        return dict(ce=0, pe=0, cec=0, pec=0, pcr=float("nan"), res=None, sup=None)
+        return dict(ce=0, pe=0, cec=0, pec=0, lean=0, pcr=float("nan"), res=None, sup=None)
     ce, pe = sum(r[1] for r in ch), sum(r[3] for r in ch)
+    # lean aggregates what each leg did, not just how much OI moved - so a chain
+    # full of bought puts reads bearish instead of masquerading as support.
+    lean = sum(_lean(leg_action(r[2], r[7]), CE_BULL, r[2])
+               + _lean(leg_action(r[4], r[8]), PE_BULL, r[4]) for r in ch)
     return dict(ce=ce, pe=pe, cec=sum(r[2] for r in ch), pec=sum(r[4] for r in ch),
-                pcr=pe / ce if ce else float("nan"),
+                lean=lean, pcr=pe / ce if ce else float("nan"),
                 res=max(ch, key=lambda r: r[1])[0], sup=max(ch, key=lambda r: r[3])[0])
 
 
@@ -124,30 +131,57 @@ def pcr_tag(pcr):
     return "Bullish" if pcr > 1.2 else "Bearish" if pcr < 0.8 else "Neutral"
 
 
-def strike_tag(cc, pc):
-    """Per-strike read of today's OI change. Writing builds a wall, unwinding removes one."""
-    if cc == 0 and pc == 0:
-        return "-"                                 # nobody touched it: not an unwind
-    if cc <= 0 and pc <= 0:
-        return "CE unwind" if cc < pc else "PE unwind"
-    return "CE writing" if cc > pc else "PE writing" if pc > cc else "Balanced"
+def leg_action(oi_chg, px_chg):
+    """The classic OI-vs-price quadrant, for one option leg. OI rising on a
+    falling premium is fresh money on the offer (writing a wall); OI rising on a
+    rising premium is fresh money on the bid (buying a punt). Falling OI is
+    somebody going home - which side went home depends on the premium again."""
+    if oi_chg > 0:
+        return "buildup" if px_chg > 0 else "writing"
+    if oi_chg < 0:
+        return "covering" if px_chg > 0 else "unwinding"
+    return "-"                                     # nobody touched this leg
 
 
-def shark_row(cc, pc):
+# Calls and puts read mirror-image: writing calls caps price, writing puts floors
+# it; a writer buying back removes the wall they built.
+CE_BULL = {"buildup": True,  "covering": True,  "writing": False, "unwinding": False}
+PE_BULL = {"buildup": False, "covering": False, "writing": True,  "unwinding": True}
+
+
+def strike_tag(cc, pc, cpc=0, ppc=0):
+    """Per-strike headline: whichever leg moved more OI, and what it actually did.
+    Premium direction is what separates writing from buying - without it, every
+    rise in call OI looks like resistance even when it is call buyers."""
+    ce, pe = leg_action(cc, cpc), leg_action(pc, ppc)
+    if ce == "-" and pe == "-":
+        return "-"
+    if abs(cc) >= abs(pc):
+        return f"CE {ce}" if ce != "-" else f"PE {pe}"
+    return f"PE {pe}" if pe != "-" else f"CE {ce}"
+
+
+def _lean(action, table, oi_chg):
+    """One leg's signed weight: how much OI moved, pointed the way it leans."""
+    b = table.get(action)
+    return 0 if b is None else (abs(oi_chg) if b else -abs(oi_chg))
+
+
+def shark_row(cc, pc, cpc=0, ppc=0):
     """One strike's two legs judged independently, the way GTI's Shark matrix
-    presents them - except off real OI change rather than spot-vs-VWAP.
-    CE writing caps price, CE unwinding lifts the cap; PE writing lays a floor,
-    PE unwinding pulls it out. Score signs both legs towards bullish."""
-    ce = "Bearish" if cc > 0 else "Bullish" if cc < 0 else "-"
-    pe = "Bullish" if pc > 0 else "Bearish" if pc < 0 else "-"
-    return ce, pe, pc - cc
+    presents them - except off real OI and premium rather than spot-vs-VWAP.
+    Score weighs each leg by the OI it moved and signs it by what that OI did:
+    rising put OI is a floor only when the premium fell. When both legs are being
+    written this reduces to pc - cc, which is where it started."""
+    ce, pe = leg_action(cc, cpc), leg_action(pc, ppc)
+    return ce, pe, _lean(ce, CE_BULL, cc) + _lean(pe, PE_BULL, pc)
 
 
 def shark_matrix(rs, atm, res=None, sup=None):
     """The strike ladder with a per-leg and a net read on each rung.
     ponytail: the neutral band scales off the loudest strike in the window, so it
     reads the same on a dead morning and on expiry day with no magic constant."""
-    scored = [(r, shark_row(r[2], r[4])) for r in rs]
+    scored = [(r, shark_row(r[2], r[4], r[7], r[8])) for r in rs]
     band = 0.1 * max([abs(s) for _, (_, _, s) in scored] or [0])
     out = []
     for r, (ce, pe, score) in scored:
@@ -156,25 +190,27 @@ def shark_matrix(rs, atm, res=None, sup=None):
         note = " ".join(n for n in (
             "ATM" if k == atm else "",
             "RES" if k == res else "SUP" if k == sup else "",
-            # both legs writing = the strike is being pinned; both unwinding =
-            # the walls are coming off and the range is about to give way
-            "PIN" if cc > 0 and pc > 0 else "VAC" if cc < 0 and pc < 0 else "",
+            # Both legs genuinely written = the strike is pinned. Both legs
+            # shrinking = the walls are coming off and the range can give way.
+            "PIN" if ce == "writing" and pe == "writing"
+            else "VAC" if cc < 0 and pc < 0 else "",
         ) if n)
         out.append((k, ce, pe, net, score, note))
     return out
 
 
 def print_shark(rs, atm, res=None, sup=None):
-    print("  Shark hunting matrix   (CE caps / PE floors, off today's OI change)")
-    print(f"  {'Strike':>7} {'CE':>8} {'PE':>8} {'Net':>8} {'Score':>9}  Note")
+    print("  Shark hunting matrix   (per-leg OI x premium; Net = wall-building)")
+    print(f"  {'Strike':>7} {'CE':>10} {'PE':>10} {'Net':>8} {'Score':>9}  Note")
     for k, ce, pe, net, score, note in shark_matrix(rs, atm, res, sup):
-        print(f"  {k:>7} {ce:>8} {pe:>8} {net:>8} {sgn(score):>9}  {note}")
-    print("  PIN both legs writing (pinned)   VAC both unwinding (walls off)\n")
+        print(f"  {k:>7} {ce:>10} {pe:>10} {net:>8} {sgn(score):>9}  {note}")
+    print("  writing = wall built   buildup = bought   covering/unwinding = closing")
+    print("  PIN both legs written (pinned)   VAC both legs shrinking (walls off)\n")
 
 
-def bias_tag(scec, spec, pcr):
-    """Headline: the OI-change bias, and whether PCR agrees with it."""
-    oi = "Bullish" if spec > scec else "Bearish" if scec > spec else "Neutral"
+def bias_tag(lean, pcr):
+    """Headline: the chain-wide positioning lean, and whether PCR agrees with it."""
+    oi = "Bullish" if lean > 0 else "Bearish" if lean < 0 else "Neutral"
     p = pcr_tag(pcr)
     if oi == "Neutral" or p in ("Neutral", "n/a"):
         return oi if oi != "Neutral" else p
@@ -193,9 +229,12 @@ def rows(rec, n):
     for k in wanted:
         r = by_strike.get(k, {})
         ce, pe = r.get("CE", {}), r.get("PE", {})
+        # "change" is the premium move on the same baseline as the OI change,
+        # so the quadrant needs no snapshot of our own.
         out.append((k, ce.get("openInterest", 0), ce.get("changeinOpenInterest", 0),
                     pe.get("openInterest", 0), pe.get("changeinOpenInterest", 0),
-                    ce.get("lastPrice", 0), pe.get("lastPrice", 0)))
+                    ce.get("lastPrice", 0), pe.get("lastPrice", 0),
+                    ce.get("change", 0), pe.get("change", 0)))
     return spot, atm, out
 
 
@@ -208,26 +247,28 @@ def report(symbol, expiry, stamp, spot, atm, rs, ch=(), shark=False):
           f"   [{'LIVE' if live else 'CLOSED'}]\n")
     print(f"{'Strike':>7} {'CE OI':>9} {'CE d':>9} {'PE OI':>9} {'PE d':>9} "
           f"{'CE':>8} {'PE':>8}  Signal")
-    for k, co, cc, po, pc, cp, pp in rs:
+    for k, co, cc, po, pc, cp, pp, cpc, ppc in rs:
         mark = " <" if k == atm else "  "
         print(f"{k:>7} {fmt(co):>9} {sgn(cc):>9} {fmt(po):>9} {sgn(pc):>9} "
-              f"{cp:>8.1f} {pp:>8.1f}{mark} {strike_tag(cc, pc)}")
+              f"{cp:>8.1f} {pp:>8.1f}{mark} {strike_tag(cc, pc, cpc, ppc)}")
     print(f"\n  Window {fmt(sce):>8} {sgn(scec):>9} {fmt(spe):>9} {sgn(spec):>9}")
     print(f"  Chain  {fmt(t['ce']):>8} {sgn(t['cec']):>9} {fmt(t['pe']):>9} {sgn(t['pec']):>9}")
     print(f"  PCR {t['pcr']:.2f} {pcr_tag(t['pcr'])}   Res {t['res']}   Sup {t['sup']}"
           f"   (chain-wide)")
-    print(f"  ATM {strike_tag(*next((r[2], r[4]) for r in rs if r[0] == atm))}"
-          f"   >> {bias_tag(t['cec'], t['pec'], t['pcr'])}\n")
+    print(f"  ATM {strike_tag(*next((r[2], r[4], r[7], r[8]) for r in rs if r[0] == atm))}"
+          f"   >> {bias_tag(t['lean'], t['pcr'])}\n")
     if shark:
         print_shark(rs, atm, t["res"], t["sup"])
 
 
 def selftest():
-    def leg(s, oi, ch, px):
-        return {"strikePrice": s, "openInterest": oi, "changeinOpenInterest": ch, "lastPrice": px}
+    def leg(s, oi, ch, px, pxch=0.0):
+        return {"strikePrice": s, "openInterest": oi, "changeinOpenInterest": ch,
+                "lastPrice": px, "change": pxch}
     rec = {"underlyingValue": 23635.1, "strikePrices": [23500, 23550, 23600, 23650, 23700],
-           "data": [{"CE": leg(s, s, -s, 1.0), "PE": leg(s, 2 * s, s, 2.0)}
+           "data": [{"CE": leg(s, s, s, 1.0, -0.5), "PE": leg(s, 2 * s, 2 * s, 2.0, -0.5)}
                     for s in (23600, 23650)]}
+    assert len(rows(rec, 1)[2][0]) == 9, "rows must carry both premium changes"
     spot, atm, rs = rows(rec, 1)
     assert atm == 23650, atm
     assert [r[0] for r in rs] == [23600, 23650, 23700]
@@ -240,12 +281,19 @@ def selftest():
     assert not market_live("05-Sep-2026 15:30:00", now)[0], "holiday: stamp never advances"
     assert not market_live("", now)[0] and not market_live(None, now)[0]
     assert pcr_tag(1.5) == "Bullish" and pcr_tag(0.5) == "Bearish" and pcr_tag(1.0) == "Neutral"
+    assert leg_action(100, -5) == "writing", "OI up, premium down = a wall"
+    assert leg_action(100, 5) == "buildup", "OI up, premium up = buyers, not writers"
+    assert leg_action(-100, 5) == "covering" and leg_action(-100, -5) == "unwinding"
+    assert leg_action(0, 5) == "-", "no OI change is no position change"
     assert strike_tag(100, -50) == "CE writing" and strike_tag(-50, 100) == "PE writing"
-    assert strike_tag(-100, -50) == "CE unwind" and strike_tag(-50, -100) == "PE unwind"
-    assert strike_tag(0, 0) == "-", "an untouched strike is not a PE unwind"
-    assert bias_tag(10, 99, 1.5) == "Bullish (confirmed)", bias_tag(10, 99, 1.5)
-    assert bias_tag(10, 99, 0.5) == "Bullish (PCR disagrees)"
-    assert bias_tag(99, 10, 1.0) == "Bearish", "neutral PCR must not veto the OI read"
+    assert strike_tag(100, -50, 5, 0) == "CE buildup", "rising premium is call buying"
+    assert strike_tag(-100, -50) == "CE unwinding" and strike_tag(-50, -100) == "PE unwinding"
+    assert rs[0][7] == -0.5 and rs[0][8] == -0.5, "premium change reaches the row"
+    assert strike_tag(0, 0) == "-", "an untouched strike is not an unwind"
+    assert bias_tag(89, 1.5) == "Bullish (confirmed)", bias_tag(89, 1.5)
+    assert bias_tag(89, 0.5) == "Bullish (PCR disagrees)"
+    assert bias_tag(-89, 1.0) == "Bearish", "neutral PCR must not veto the OI read"
+    assert bias_tag(0, 1.5) == "Bullish", "flat positioning falls back to PCR"
 
     exps = ["08-Sep-2026", "15-Sep-2026", "22-Sep-2026"]
     at_open = datetime.datetime(2026, 9, 8, 10, 0, tzinfo=IST)
@@ -256,27 +304,35 @@ def selftest():
     assert front_expiry(["05-Sep-2026"], after) == "05-Sep-2026", "all past: keep the last"
     assert front_expiry([], after) is None
 
-    assert shark_row(100, 50)[:2] == ("Bearish", "Bullish"), "CE writing caps, PE writing floors"
-    assert shark_row(-100, -50)[:2] == ("Bullish", "Bearish"), "unwinding flips both legs"
+    assert shark_row(100, 50, -1, -1)[:2] == ("writing", "writing"), "both walls"
     assert shark_row(0, 0) == ("-", "-", 0), "a strike nobody touched has no read"
-    assert shark_row(-100, 50)[2] == 150, "score signs both legs towards bullish"
+    # call longs leaving (-100) is bearish, written puts (+50) bullish: -100 + 50
+    assert shark_row(-100, 50)[2] == -50, "score signs each leg by what it did"
+    assert shark_row(100, 50, -1, -1)[2] == -50, "both written: reduces to pc - cc"
+    assert shark_row(100, 50, -1, +1)[2] == -150, "bought puts count against, not for"
+    assert CE_BULL["writing"] is False and PE_BULL["writing"] is True
 
     sm = shark_matrix(rs, atm, res=23650, sup=23600)
     assert [r[3] for r in sm] == ["Bullish", "Bullish", "Neutral"], [r[3] for r in sm]
-    assert sm[2][1] == "-" and sm[2][2] == "-", "missing strike must read blank, not bearish"
+    assert sm[2][1] == "-" and sm[2][2] == "-", "missing strike must read blank"
     assert "ATM" in sm[1][5] and "RES" in sm[1][5], sm[1][5]
     assert "SUP" in sm[0][5] and "ATM" not in sm[0][5], sm[0][5]
     # flags need a strike that is not the ATM, so the note holds only the flag
-    assert shark_matrix([(1, 0, 100, 0, 50, 0, 0)], None)[0][5] == "PIN"
-    assert shark_matrix([(1, 0, -100, 0, -50, 0, 0)], None)[0][5] == "VAC"
-    assert shark_matrix([(1, 0, 0, 0, 0, 0, 0)], None)[0][3] == "Neutral", "flat chain: no divide by zero"
+    assert shark_matrix([(1, 0, 100, 0, 50, 0, 0, -1, -1)], None)[0][5] == "PIN"
+    assert shark_matrix([(1, 0, 100, 0, 50, 0, 0, 5, -1)], None)[0][5] == "", \
+        "call buying is not a pin, however much OI it adds"
+    assert shark_matrix([(1, 0, -100, 0, -50, 0, 0, 0, 0)], None)[0][5] == "VAC"
+    assert shark_matrix([(1, 0, 0, 0, 0, 0, 0, 0, 0)], None)[0][3] == "Neutral", "no divide by zero"
     assert shark_matrix([], None) == [], "empty window must not raise"
 
     ch = chain(rec)
     t = totals(ch)
+    assert len(ch[0]) == len(rs[0]), "chain() and rows() must stay interchangeable"
     assert t["res"] == 23650 and t["sup"] == 23650, t          # only 2 strikes in the fixture
     assert t["ce"] == 47250 and t["pcr"] == 2.0, t
-    assert totals([])["res"] is None, "empty chain must not raise"
+    # both legs written on a falling premium: calls against, puts for, puts bigger
+    assert t["lean"] == 47250, t["lean"]
+    assert totals([])["res"] is None and totals([])["lean"] == 0, "empty chain must not raise"
 
     report("SELFTEST", "08-Sep-2026", "08-Sep-2026 15:39:00", spot, atm, rs, ch=ch, shark=True)
     print("selftest ok")

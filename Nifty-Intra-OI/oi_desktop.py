@@ -8,8 +8,8 @@ Live NSE data, no TradingView entitlement needed. Stdlib only (tkinter).
 import queue, sys, threading, tkinter as tk
 from tkinter import ttk
 
-from oi_chain import (bias_tag, chain, fetch, fmt, front_expiry, market_live, pcr_tag,
-                      rows, sgn, shark_matrix, strike_tag, totals)
+from oi_chain import (CE_BULL, PE_BULL, bias_tag, chain, fetch, fmt, front_expiry,
+                      market_live, pcr_tag, rows, sgn, shark_matrix, strike_tag, totals)
 
 AUTO = "auto (weekly)"
 
@@ -22,10 +22,17 @@ COLS = ("Strike", "CE OI", "CE Δ", "PE OI", "PE Δ", "CE LTP", "PE LTP", "Signa
 SHARK_COLS = ("CE", "PE", "Net", "Note")
 LEFT = {"Signal", "Note"}
 SYMBOLS = ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY")
-# CE writing builds resistance (bearish), PE writing builds support (bullish);
-# unwinding is the same wall coming down, so the colour flips.
-TAG_FG = {"CE writing": RED, "PE unwind": RED, "PE writing": GRN, "CE unwind": GRN}
+# Colour follows what an action implies, not the word: writing calls builds
+# resistance (bearish), writing puts builds support (bullish), and a writer
+# buying back removes the wall they built.
+TAG_FG = {f"CE {a}": (GRN if b else RED) for a, b in CE_BULL.items()}
+TAG_FG.update({f"PE {a}": (GRN if b else RED) for a, b in PE_BULL.items()})
 VERDICT_FG = {"Bullish": GRN, "Bearish": RED}
+
+
+def action_fg(action, table):
+    b = table.get(action)
+    return DIM if b is None else (GRN if b else RED)
 
 
 class App:
@@ -183,9 +190,9 @@ class App:
         def off(k):                                    # is the wall outside the window?
             return "" if k is None or lo <= k <= hi else ("↑" if k > hi else "↓")
         sm = shark_matrix(rs, atm, max_ce, max_pe) if self.shark.get() else [None] * len(rs)
-        for row, (k, co, cc, po, pc, cp, pp), sk in zip(self.cells, rs, sm):
+        for row, (k, co, cc, po, pc, cp, pp, cpc, ppc), sk in zip(self.cells, rs, sm):
             bg = ATM_BG if k == atm else BG
-            tag = strike_tag(cc, pc)
+            tag = strike_tag(cc, pc, cpc, ppc)
             vals = (str(k), fmt(co), sgn(cc), fmt(po), sgn(pc), f"{cp:.1f}", f"{pp:.1f}", tag)
             fgs = (YEL if k == atm else FG, FG, RED if cc > 0 else GRN, FG,
                    GRN if pc > 0 else RED, GRN, RED, TAG_FG.get(tag, DIM))
@@ -194,13 +201,13 @@ class App:
             if sk:
                 _, ce, pe, net, _, note = sk
                 vals += (ce, pe, net, note)
-                fgs += (VERDICT_FG.get(ce, DIM), VERDICT_FG.get(pe, DIM),
+                fgs += (action_fg(ce, CE_BULL), action_fg(pe, PE_BULL),
                         VERDICT_FG.get(net, DIM),
                         YEL if ("PIN" in note or "VAC" in note) else DIM)
                 bgs += (bg,) * len(SHARK_COLS)
             for lb, v, f, b in zip(row, vals, fgs, bgs):
                 lb.config(text=v, fg=f, bg=b)
-        bias = bias_tag(t["cec"], t["pec"], t["pcr"])
+        bias = bias_tag(t["lean"], t["pcr"])
         self.f1.config(text=f"{sym} {expiry}   spot {spot}   ATM {atm}   "
                             f"PCR {t['pcr']:.2f} {pcr_tag(t['pcr'])}   ▶ {bias}",
                        fg=GRN if bias.startswith("Bullish") else
@@ -208,7 +215,8 @@ class App:
         self.f2.config(text=f"Res {max_ce}{off(max_ce)}   Sup {max_pe}{off(max_pe)}   "
                             f"CE {fmt(t['ce'])} {sgn(t['cec'])}   "
                             f"PE {fmt(t['pe'])} {sgn(t['pec'])}   "
-                            f"ATM {strike_tag(atm_row[2], atm_row[4])}   (whole chain)",
+                            f"ATM {strike_tag(atm_row[2], atm_row[4], atm_row[7], atm_row[8])}"
+                            f"   (whole chain)",
                        fg=DIM)
         stamp = rec.get("timestamp", "")
         self.live, _ = market_live(stamp)
@@ -219,12 +227,15 @@ class App:
 
 def selftest():
     """Build the real UI on a fake payload, render once, close."""
-    def leg(s, oi, ch, px):
-        return {"strikePrice": s, "openInterest": oi, "changeinOpenInterest": ch, "lastPrice": px}
+    def leg(s, oi, ch, px, pxch=0.0):
+        return {"strikePrice": s, "openInterest": oi, "changeinOpenInterest": ch,
+                "lastPrice": px, "change": pxch}
     rec = {"underlyingValue": 23635.1, "timestamp": "08-Sep-2026 15:40:00",
            "expiryDates": ["08-Sep-2026", "15-Sep-2026"],
            "strikePrices": ["23550", "23600", "23650", "23700", "23750"],
-           "data": [{"CE": leg(s, s, -s, 1.0), "PE": leg(s, 2 * s, s, 2.0)}
+           # CE shrinking on a falling premium = unwinding; PE growing on a
+           # falling premium = writing, and it moves the most OI, so it leads.
+           "data": [{"CE": leg(s, s, -s, 1.0, -0.5), "PE": leg(s, 2 * s, 2 * s, 2.0, -0.5)}
                     for s in (23600, 23650, 23700)]
                    # walls outside the ±1 display window, to prove Res/Sup see them
                    + [{"CE": leg(25000, 9e5, 1e3, 0.5), "PE": leg(25000, 1.0, 0.0, 0.5)},
@@ -256,8 +267,10 @@ def selftest():
     app.shark.set(True)
     app.toggle_shark()
     assert len(app.cells[0]) == len(COLS) + len(SHARK_COLS), len(app.cells[0])
-    assert app.cells[1][8].cget("text") == "Bullish", "CE unwinding lifts the cap"
-    assert app.cells[1][9].cget("text") == "Bullish", "PE writing lays a floor"
+    assert app.cells[1][8].cget("text") == "unwinding", app.cells[1][8].cget("text")
+    assert app.cells[1][8].cget("fg") == RED, "call buyers leaving is not bullish"
+    assert app.cells[1][9].cget("text") == "writing", "PE writing lays a floor"
+    assert app.cells[1][9].cget("fg") == GRN, "written puts read green"
     assert app.cells[1][10].cget("text") == "Bullish" and app.cells[1][10].cget("fg") == GRN
     assert app.cells[1][11].cget("text") == "ATM", app.cells[1][11].cget("text")
     assert app.cells[0][11].cget("text") == "", "off-window walls tag no visible row"
