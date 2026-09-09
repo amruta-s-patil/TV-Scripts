@@ -1,0 +1,428 @@
+//@version=6
+indicator("Mumbaikar Ghost Engine (GTI Pro Master - Restored Production Edition)", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// =========================================================================
+// 1. SETTINGS & INPUTS
+// =========================================================================
+grp_main               = "Core Sensitivity Settings"
+swingLen               = input.int(15, title="Swing Zone / Base Lookback", group=grp_main)
+volMult                = input.float(1.35, title="Whale Volume Multiplier", group=grp_main)
+extremeVolMult         = input.float(2.0, title="Exhaustion Climax Multiplier", group=grp_main)
+atrExpMult             = input.float(1.4, title="ATR Expansion Multiplier", group=grp_main)
+signalCooldown         = input.int(6, title="Signal Cooldown (Bars)", group=grp_main)
+showPatterns           = input.bool(true, title="Show Shark/Whale Flags", group=grp_main)
+isolationBars          = input.int(30, title="Isolation Window (Bars)", group=grp_main)
+
+grp_wave               = "Structural Wave (5) Engine"
+showWave5              = input.bool(true, "Show Structural W(5) Labels", group=grp_wave)
+w5Lookback             = input.int(14, "Wave Peak Lookback", group=grp_wave)
+lockBars               = input.int(8, "Lockout Bars", group=grp_wave)
+
+grp_manish             = "Shark Hunting & Dynamic Zones"
+showHtfZones           = input.bool(true, "Show 4-Tier Gap-Adaptive 9:15 AM Zones", group=grp_manish)
+showShelves            = input.bool(true, "Show Reversal Shelves", group=grp_manish)
+maxShelves             = input.int(8, "Max Historical Shelves Retained", minval=2, maxval=20, group=grp_manish)
+shelfBars              = input.int(35, "Shelf Extension (Bars)", group=grp_manish)
+strikeStep             = input.int(50, "Strike Gap Step (Nifty=50, BankNifty=100)", group=grp_manish)
+
+// =========================================================================
+// 2. INDIA VIX & REGIME (VEGA-AWARE SAFE FALLBACK)
+// =========================================================================
+rawVix   = request.security("INDIAVIX", "D", close)
+indiaVix = nz(rawVix, 14.0)
+
+var string strikeAdvice = "ATM (AT THE MONEY)"
+var color strikeColor   = color.yellow
+var string regime       = "NORMAL"
+
+if (indiaVix < 13.0)
+    strikeAdvice := "ATM / OTM (CHEAP VEGA)"
+    strikeColor  := color.green
+    regime       := "LOW VIX (Rangebound)"
+else if (indiaVix >= 13.0 and indiaVix <= 18.0)
+    strikeAdvice := "ATM / SLIGHT ITM"
+    strikeColor  := color.yellow
+    regime       := "MODERATE VIX (Trending)"
+else
+    strikeAdvice := "DEEP ITM (VEGA SHIELD)"
+    strikeColor  := color.maroon
+    regime       := "HIGH VIX (High Vega Crush Risk)"
+
+// =========================================================================
+// 3. RESTORED 4-TIER GAP-ADAPTIVE 9:15 AM ZONES
+// =========================================================================
+dHigh_1  = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_on)
+dLow_1   = request.security(syminfo.tickerid, "D", low[1], lookahead=barmerge.lookahead_on)
+dClose_1 = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
+dOpen_0  = request.security(syminfo.tickerid, "D", open, lookahead=barmerge.lookahead_on)
+
+dLow_multi  = request.security(syminfo.tickerid, "D", ta.lowest(low, 4)[1], lookahead=barmerge.lookahead_on)
+dHigh_multi = request.security(syminfo.tickerid, "D", ta.highest(high, 4)[1], lookahead=barmerge.lookahead_on)
+
+var float supTargetTop = na, var float supTargetBot = na
+var float supMainTop   = na, var float supMainBot   = na
+var float demMainTop   = na, var float demMainBot   = na
+var float demTargetTop = na, var float demTargetBot = na
+
+isNewDay = ta.change(time("D")) != 0
+
+if isNewDay
+    float gapSize   = dOpen_0 - dClose_1
+    float prevRange = math.max(dHigh_1 - dLow_1, float(strikeStep * 2))
+    float gapThresh = prevRange * 0.25
+
+    if gapSize < -gapThresh
+        supMainTop   := dClose_1
+        supMainBot   := dClose_1 - (math.abs(gapSize) * 0.35)
+        supTargetTop := dHigh_1
+        supTargetBot := dHigh_1 - (prevRange * 0.15)
+        demMainTop   := dOpen_0
+        demMainBot   := math.min(dOpen_0 - (prevRange * 0.20), dLow_multi)
+        demTargetTop := demMainBot
+        demTargetBot := demMainBot - (prevRange * 0.30)
+    else if gapSize > gapThresh
+        supTargetTop := math.max(dHigh_multi, dOpen_0 + (prevRange * 0.30))
+        supTargetBot := supTargetTop - (prevRange * 0.15)
+        supMainTop   := dOpen_0 + (prevRange * 0.20)
+        supMainBot   := dOpen_0
+        demMainTop   := dClose_1 + (gapSize * 0.35)
+        demMainBot   := dClose_1
+        demTargetTop := dLow_1 + (prevRange * 0.15)
+        demTargetBot := dLow_1
+    else
+        supTargetTop := dHigh_multi
+        supTargetBot := dHigh_multi - (prevRange * 0.15)
+        supMainTop   := dHigh_1
+        supMainBot   := math.max(dClose_1, dHigh_1 - (prevRange * 0.25))
+        demMainTop   := math.min(dClose_1, dLow_1 + (prevRange * 0.25))
+        demMainBot   := dLow_1
+        demTargetTop := dLow_multi
+        demTargetBot := dLow_multi - (prevRange * 0.20)
+
+// 1. Supply Target Box (Top Cyan)
+p_st_top = plot(showHtfZones ? supTargetTop : na, "D Supply Target Top", color=color.new(color.teal, 60), style=plot.style_linebr)
+p_st_bot = plot(showHtfZones ? supTargetBot : na, "D Supply Target Bot", color=color.new(color.teal, 60), style=plot.style_linebr)
+fill(p_st_top, p_st_bot, color=color.new(color.teal, 85), title="D Supply Target Box")
+
+// 2. Main Supply Box (Red/Coral Overhead)
+p_sm_top = plot(showHtfZones ? supMainTop : na, "D Supply Zone Top", color=color.new(color.red, 60), style=plot.style_linebr)
+p_sm_bot = plot(showHtfZones ? supMainBot : na, "D Supply Zone Bot", color=color.new(color.red, 60), style=plot.style_linebr)
+fill(p_sm_top, p_sm_bot, color=color.new(color.red, 85), title="D Supply Zone Box")
+
+// 3. Main Demand Box (Green Floor)
+p_dm_top = plot(showHtfZones ? demMainTop : na, "D Demand Zone Top", color=color.new(color.green, 60), style=plot.style_linebr)
+p_dm_bot = plot(showHtfZones ? demMainBot : na, "D Demand Zone Bot", color=color.new(color.green, 60), style=plot.style_linebr)
+fill(p_dm_top, p_dm_bot, color=color.new(color.green, 85), title="D Demand Zone Box")
+
+// 4. Demand Target Box (Bottom Cyan)
+p_dt_top = plot(showHtfZones ? demTargetTop : na, "D Demand Target Top", color=color.new(color.teal, 60), style=plot.style_linebr)
+p_dt_bot = plot(showHtfZones ? demTargetBot : na, "D Demand Target Bot", color=color.new(color.teal, 60), style=plot.style_linebr)
+fill(p_dt_top, p_dt_bot, color=color.new(color.teal, 85), title="D Demand Target Box")
+
+// =========================================================================
+// 4. GOLDEN LINE (VWAP) & COMPRESSION
+// =========================================================================
+goldenLine = ta.vwap(close)
+plot(goldenLine, color=color.new(#FFD700, 0), linewidth=2, title="Golden Line (VWAP)")
+
+bbBasis = ta.sma(close, 20)
+bbDev   = 2.0 * ta.stdev(close, 20)
+kcBasis = ta.sma(close, 20)
+kcDev   = 1.5 * ta.atr(20)
+
+isCompressing = ((bbBasis + bbDev) < (kcBasis + kcDev)) and ((bbBasis - bbDev) > (kcBasis - kcDev))
+bgcolor(isCompressing ? color.new(color.purple, 92) : na, title="Whale Compression Zone")
+
+// =========================================================================
+// 5. WAVE (5) STRUCTURAL EXHAUSTION
+// =========================================================================
+rsiVal      = ta.rsi(close, 14)
+bodySize    = math.abs(open - close)
+candleRange = high - low
+upperWick   = high - math.max(open, close)
+lowerWick   = math.min(open, close) - low
+atr         = ta.atr(14)
+volSma      = ta.sma(volume, 20)
+
+float priorHigh = ta.highest(high, w5Lookback)[1]
+float priorRsi  = ta.highest(rsiVal, w5Lookback)[1]
+
+bool isW5Structure = high > priorHigh and rsiVal < priorRsi and (close > goldenLine + (atr * 0.8))
+bool isW5Climax    = upperWick > bodySize and (close < open or close < high - (candleRange * 0.4))
+bool isTrueWave5   = isW5Structure and isW5Climax
+
+var int lastExhaustionBar = -100
+if isTrueWave5
+    lastExhaustionBar := bar_index
+
+plotshape(showWave5 and isTrueWave5, "Wave (5) Exhaustion", shape.labeldown, location.abovebar, color=color.maroon, text="W(5)\nEXHAUSTION", textcolor=color.white, size=size.small)
+bool isWave5LockedOut = (bar_index - lastExhaustionBar) <= lockBars
+
+// =========================================================================
+// 6. CANDLES, ABSORPTION SIGNALS & HISTORICAL SHELVES (VERIFIED COLORING)
+// =========================================================================
+int istHour   = hour(time, "Asia/Kolkata")
+int istMinute = minute(time, "Asia/Kolkata")
+
+bullInjectionBase = lowerWick > (bodySize * 1.8) and upperWick < bodySize
+bearInjectionBase = upperWick > (bodySize * 1.8) and lowerWick < bodySize
+isBelanBase       = bodySize < (candleRange * 0.15) 
+
+strongBull  = bullInjectionBase and candleRange > atr
+weakBull    = bullInjectionBase and candleRange <= atr
+strongBear  = bearInjectionBase and candleRange > atr
+weakBear    = bearInjectionBase and candleRange <= atr
+strongBelan = isBelanBase and candleRange > atr
+weakBelan   = isBelanBase and candleRange <= atr
+
+isWhaleVol   = volume > (volSma * volMult)
+isExtremeVol = volume > (volSma * extremeVolMult)
+
+instBuy  = isWhaleVol and (close > open or lowerWick > (bodySize * 0.8))
+instSell = isWhaleVol and (close < open or upperWick > (bodySize * 0.8))
+
+hasLowerAbsWick = lowerWick > (bodySize * 1.3) and lowerWick > (candleRange * 0.35)
+hasUpperAbsWick = upperWick > (bodySize * 1.3) and upperWick > (candleRange * 0.35)
+
+// Verified Bar Color Strategy: Keeps native Green & Red, paints Blue/Black/Yellow/Gray on triggers
+color barCol = na
+
+if instBuy and not instSell
+    barCol := color.blue                               // Whale Buy Inflow
+else if instSell and not instBuy
+    barCol := color.black                              // Whale Sell Capping
+else if candleRange >= (atr * atrExpMult) and volume > volSma
+    barCol := color.yellow                             // Range Expansion
+else if hasLowerAbsWick or hasUpperAbsWick or isBelanBase
+    barCol := color.rgb(130, 130, 130)                 // Institutional Absorption / Belan (Gray)
+
+barcolor(barCol)
+
+plotshape(strongBull, style=shape.triangleup, location=location.belowbar, color=color.lime, size=size.normal, title="Strong Bull")
+plotshape(strongBear, style=shape.triangledown, location=location.abovebar, color=color.fuchsia, size=size.normal, title="Strong Bear")
+plotshape(strongBelan, style=shape.diamond, location=location.abovebar, color=color.orange, size=size.normal, title="Strong Belan")
+plotshape(weakBull, style=shape.circle, location=location.belowbar, color=color.lime, size=size.tiny, title="Weak Bull")
+plotshape(weakBear, style=shape.circle, location=location.abovebar, color=color.fuchsia, size=size.tiny, title="Weak Bear")
+plotshape(weakBelan, style=shape.xcross, location=location.abovebar, color=color.orange, size=size.tiny, title="Weak Belan")
+
+// Institutional Inflow Absorption (Gated with signalCooldown)
+var int lastPutSigBar  = -100
+var int lastCallSigBar = -100
+
+bool isAtBase          = low <= ta.lowest(low, swingLen)[1] + (atr * 0.35) or (not na(demMainTop) and low <= demMainTop)
+bool isPutWriteInflow  = isAtBase and hasLowerAbsWick and volume > (volSma * volMult) and close >= goldenLine and (bar_index - lastPutSigBar > signalCooldown)
+
+bool isAtCeiling       = high >= ta.highest(high, swingLen)[1] - (atr * 0.35) or (not na(supMainBot) and high >= supMainBot)
+bool isCallWriteInflow = isAtCeiling and hasUpperAbsWick and volume > (volSma * volMult) and close <= goldenLine and (bar_index - lastCallSigBar > signalCooldown)
+
+if isPutWriteInflow
+    lastPutSigBar := bar_index
+if isCallWriteInflow
+    lastCallSigBar := bar_index
+
+plotshape(isPutWriteInflow, "Put Writing Inflow", shape.labelup, location.belowbar, color=color.rgb(0, 150, 100), text="PUT WRITE\nINFLOW", textcolor=color.white, size=size.tiny)
+plotshape(isCallWriteInflow, "Call Writing Inflow", shape.labeldown, location.abovebar, color=color.rgb(160, 40, 60), text="CALL WRITE\nCAPPING", textcolor=color.white, size=size.tiny)
+
+// Reversal Climax Detection (Fixed Dump Filter & Unified swingLen)
+var int lastClimaxBar = -100
+bool isOpeningDump = (istHour == 9 and istMinute <= 25) and (not na(demMainTop) and low <= demMainTop) and volume > volSma
+bool canDraw       = ((bar_index - lastClimaxBar) > 3) or isOpeningDump
+
+isBearClimax = (isExtremeVol or isOpeningDump) and close < open and ((not na(demMainTop) and low <= demMainTop) or low <= ta.lowest(low, swingLen)[1]) and canDraw
+isBullClimax = isExtremeVol and close > open and ((not na(supMainBot) and high >= supMainBot) or high >= ta.highest(high, swingLen)[1]) and canDraw
+
+plotshape(isBearClimax, "Bear Climax Bubble", shape.circle, location.abovebar, color=color.new(color.red, 30), size=size.normal)
+plotshape(isBullClimax, "Bull Climax Bubble", shape.circle, location.belowbar, color=color.new(color.green, 30), size=size.normal)
+
+// Historical Shelf Buffer (Type-Safe string style_type with Memory Protection)
+var line[]  shelfLines  = array.new<line>()
+var label[] shelfLabels = array.new<label>()
+
+f_storeShelf(float priceLevel, color col, string tag, string style_type) =>
+    newLine  = line.new(bar_index, priceLevel, bar_index + shelfBars, priceLevel, color=col, width=2, style=style_type)
+    newLabel = label.new(bar_index + shelfBars, priceLevel, text=tag, color=color.new(color.white, 100), textcolor=col, style=label.style_label_left, size=size.small)
+    array.push(shelfLines, newLine)
+    array.push(shelfLabels, newLabel)
+    if array.size(shelfLines) > (maxShelves * 2)
+        line.delete(array.shift(shelfLines))
+        label.delete(array.shift(shelfLabels))
+
+if showShelves and isBearClimax
+    lastClimaxBar := bar_index
+    string dateTag = "[" + str.tostring(dayofmonth(time, "Asia/Kolkata")) + "]"
+    float midShelf = low + (candleRange * 0.5)
+    f_storeShelf(low, color.maroon, dateTag, line.style_solid)
+    f_storeShelf(midShelf, color.teal, dateTag, line.style_dashed)
+
+if showShelves and isBullClimax
+    lastClimaxBar := bar_index
+    string dateTag = "[" + str.tostring(dayofmonth(time, "Asia/Kolkata")) + "]"
+    float midShelf = high - (candleRange * 0.5)
+    f_storeShelf(high, color.orange, dateTag, line.style_solid)
+    f_storeShelf(midShelf, color.orange, dateTag, line.style_dashed)
+
+// =========================================================================
+// 7. SHARK (3-FLAG) & WHALE (4-FLAG) TRAPS
+// =========================================================================
+bullCandle     = close > open and bodySize > (candleRange * 0.5)
+bearCandle     = close < open and bodySize > (candleRange * 0.5)
+isIsolatedBull = close > ta.highest(high, isolationBars)[3]
+isIsolatedBear = close < ta.lowest(low, isolationBars)[3]
+
+bull3Flag = bullCandle and bullCandle[1] and bullCandle[2] and isIsolatedBull
+bear3Flag = bearCandle and bearCandle[1] and bearCandle[2] and isIsolatedBear
+bull4Flag = bull3Flag[1] and bullCandle
+bear4Flag = bear3Flag[1] and bearCandle
+
+plotshape(showPatterns and bull3Flag and not bull4Flag, style=shape.labeldown, text="SHARK TRAP\n(WAIT)", color=color.yellow, textcolor=color.black, location=location.abovebar, size=size.small)
+plotshape(showPatterns and bear3Flag and not bear4Flag, style=shape.labelup, text="SHARK TRAP\n(WAIT)", color=color.yellow, textcolor=color.black, location=location.belowbar, size=size.small)
+plotshape(showPatterns and bull4Flag, style=shape.labelup, text="WHALE 4-FLAG\n(LONG)", color=color.blue, textcolor=color.white, location=location.belowbar, size=size.normal)
+plotshape(showPatterns and bear4Flag, style=shape.labeldown, text="WHALE 4-FLAG\n(SHORT)", color=color.black, textcolor=color.white, location=location.abovebar, size=size.normal)
+
+// =========================================================================
+// 8. RESTORED 5-PHASE CAMDC STATE MACHINE
+// =========================================================================
+var string camdcPhase = "2. Accumulation"
+var color camdcColor  = color.teal
+var int lastPhaseBar  = 0
+
+bool canTransition = (bar_index - lastPhaseBar) >= 3
+
+if isCompressing
+    camdcPhase   := "1. Compression"
+    camdcColor   := color.purple
+    lastPhaseBar := bar_index
+else if canTransition
+    if bull3Flag or bear3Flag or (not na(supMainBot) and high >= supMainBot and close < supMainBot) or (not na(demMainTop) and low <= demMainTop and close > demMainTop)
+        camdcPhase   := "3. Manipulation"
+        camdcColor   := color.red
+        lastPhaseBar := bar_index
+    else if bull4Flag or bear4Flag or (candleRange >= (atr * atrExpMult) and volume > volSma)
+        camdcPhase   := "4. Distribution"
+        camdcColor   := color.blue
+        lastPhaseBar := bar_index
+    else if (close > goldenLine and close < open) or (close < goldenLine and close > open)
+        camdcPhase   := "5. Correction"
+        camdcColor   := color.orange
+        lastPhaseBar := bar_index
+    else
+        camdcPhase   := "2. Accumulation"
+        camdcColor   := color.teal
+        lastPhaseBar := bar_index
+
+// =========================================================================
+// 9. 5-ROW MASTER DASHBOARD BANNER
+// =========================================================================
+var table dash = table.new(position.top_right, 2, 5, border_color=color.gray, border_width=1, frame_color=color.white, frame_width=1)
+if barstate.islast
+    string waveStatus = isWave5LockedOut ? "W5 EXHAUSTION LOCK" : "CLEAR (NO LOCKOUT)"
+    color waveCol     = isWave5LockedOut ? color.maroon : color.green
+
+    table.cell(dash, 0, 0, "Current INDIA VIX:", text_color=color.white, bgcolor=color.black, text_halign=text.align_left)
+    table.cell(dash, 1, 0, str.tostring(math.round(indiaVix, 2)), text_color=color.white, bgcolor=color.black)
+    table.cell(dash, 0, 1, "Market Regime:", text_color=color.white, bgcolor=color.rgb(40, 40, 40), text_halign=text.align_left)
+    table.cell(dash, 1, 1, regime, text_color=color.white, bgcolor=color.rgb(40, 40, 40))
+    table.cell(dash, 0, 2, "CAMDC Phase:", text_color=color.white, bgcolor=color.black, text_halign=text.align_left)
+    table.cell(dash, 1, 2, camdcPhase, text_color=color.white, bgcolor=camdcColor)
+    table.cell(dash, 0, 3, "Wave (5) Status:", text_color=color.white, bgcolor=color.rgb(30, 30, 30), text_halign=text.align_left)
+    table.cell(dash, 1, 3, waveStatus, text_color=color.white, bgcolor=waveCol)
+    table.cell(dash, 0, 4, "Buy Option Strike:", text_color=color.white, bgcolor=color.navy, text_halign=text.align_left)
+    table.cell(dash, 1, 4, strikeAdvice, text_color=color.white, bgcolor=strikeColor == color.yellow ? color.olive : strikeColor == color.green ? color.green : color.maroon)
+
+// =========================================================================
+// 10. SHARK HUNTING MATRIX (SETTLED 9:15-9:30 AM ANCHOR LOCK)
+// =========================================================================
+var table matrixTab = table.new(position.bottom_right, 3, 15, border_color=color.gray, border_width=1, frame_color=color.white, frame_width=1)
+
+var float lockedAtmStrike = na
+var float lockedSpotPrice = na
+var float lockedVwap      = na
+var bool  isWindowLocked  = false
+
+if isNewDay
+    lockedAtmStrike := na
+    lockedSpotPrice := na
+    lockedVwap      := na
+    isWindowLocked  := false
+
+// Accumulates dynamically during 9:15-9:30 AM, then permanently freezes at 9:30 AM
+bool inOpeningWindow = (istHour == 9 and istMinute >= 15 and istMinute <= 30)
+
+if inOpeningWindow and not isWindowLocked
+    lockedAtmStrike := math.round(close / float(strikeStep)) * float(strikeStep)
+    lockedSpotPrice := close
+    lockedVwap      := goldenLine
+
+if (istHour > 9 or (istHour == 9 and istMinute > 30)) and not isWindowLocked
+    isWindowLocked := true
+
+float dynamicAtm = na(lockedAtmStrike) ? (math.round(close / float(strikeStep)) * float(strikeStep)) : lockedAtmStrike
+float evalSpot   = na(lockedSpotPrice) ? close : lockedSpotPrice
+float evalVwap   = na(lockedVwap)      ? goldenLine : lockedVwap
+
+f_drawCalculatedRow(int rowIdx, float sPrice, bool isAtm, bool isTopHalf) =>
+    string labelTxt = isAtm ? "» " + str.tostring(int(sPrice)) + " «" : str.tostring(int(sPrice))
+    
+    color rowBg   = isAtm ? color.rgb(25, 35, 65) : (isTopHalf ? color.rgb(180, 140, 90) : color.rgb(55, 70, 120))
+    color textCol = isAtm ? color.yellow : color.white
+
+    float halfStep = float(strikeStep) * 0.5
+
+    // CE Logic: Call covering below or at spot when above VWAP = Bullish
+    bool isCeCover = (sPrice <= evalSpot) and (evalSpot >= evalVwap)
+    bool isCeCap   = (sPrice > evalSpot + halfStep) and (evalSpot <= evalVwap)
+
+    string ceVal = isCeCover ? "Bullish" : (isCeCap ? "Bearish" : "-")
+    color  ceCol = isCeCover ? color.teal : (isCeCap ? color.red : color.rgb(50, 50, 50))
+
+    // PE Logic: Floor defense at or below spot when holding VWAP = Bullish
+    bool isPeWrite = (sPrice <= evalSpot + halfStep) and (evalSpot >= evalVwap)
+
+    string peVal = isPeWrite ? "Bullish" : "Bearish"
+    color  peCol = isPeWrite ? color.teal : color.red
+
+    table.cell(matrixTab, 0, rowIdx, labelTxt, bgcolor=rowBg, text_color=textCol, text_size=size.small)
+    table.cell(matrixTab, 1, rowIdx, ceVal,    bgcolor=ceCol, text_color=color.white, text_size=size.small)
+    table.cell(matrixTab, 2, rowIdx, peVal,    bgcolor=peCol, text_color=color.white, text_size=size.small)
+
+if barstate.islast
+    int dDay   = dayofmonth(time, "Asia/Kolkata")
+    int dMonth = month(time, "Asia/Kolkata")
+    int dYear  = year(time, "Asia/Kolkata")
+    string curDateStr = "Exp " + (dDay < 10 ? "0" : "") + str.tostring(dDay) + "/" + (dMonth < 10 ? "0" : "") + str.tostring(dMonth) + "/" + str.substring(str.tostring(dYear), 2, 4)
+
+    table.cell(matrixTab, 0, 0, "Shark Hunting 🦈", bgcolor=color.navy, text_color=color.white, text_size=size.small)
+    table.cell(matrixTab, 1, 0, syminfo.ticker,       bgcolor=color.navy, text_color=color.yellow, text_size=size.small)
+    table.cell(matrixTab, 2, 0, curDateStr,           bgcolor=color.navy, text_color=color.white, text_size=size.small)
+
+    table.cell(matrixTab, 0, 1, "Strike", bgcolor=color.black, text_color=color.gray, text_size=size.small)
+    table.cell(matrixTab, 1, 1, "CE",     bgcolor=color.black, text_color=color.gray, text_size=size.small)
+    table.cell(matrixTab, 2, 1, "PE",     bgcolor=color.black, text_color=color.gray, text_size=size.small)
+
+    // Contiguous 13-Strike Ladder centered on the 9:30 settled ATM
+    f_drawCalculatedRow(2,  dynamicAtm - (strikeStep * 6), false, true)
+    f_drawCalculatedRow(3,  dynamicAtm - (strikeStep * 5), false, true)
+    f_drawCalculatedRow(4,  dynamicAtm - (strikeStep * 4), false, true)
+    f_drawCalculatedRow(5,  dynamicAtm - (strikeStep * 3), false, true)
+    f_drawCalculatedRow(6,  dynamicAtm - (strikeStep * 2), false, true)
+    f_drawCalculatedRow(7,  dynamicAtm - (strikeStep * 1), false, true)
+
+    // Center Settled ATM Row
+    f_drawCalculatedRow(8,  dynamicAtm,                    true,  false)
+
+    // Upper 6 Contiguous Strikes
+    f_drawCalculatedRow(9,  dynamicAtm + (strikeStep * 1), false, false)
+    f_drawCalculatedRow(10, dynamicAtm + (strikeStep * 2), false, false)
+    f_drawCalculatedRow(11, dynamicAtm + (strikeStep * 3), false, false)
+    f_drawCalculatedRow(12, dynamicAtm + (strikeStep * 4), false, false)
+    f_drawCalculatedRow(13, dynamicAtm + (strikeStep * 5), false, false)
+    f_drawCalculatedRow(14, dynamicAtm + (strikeStep * 6), false, false)
+
+// =========================================================================
+// 11. TRADINGVIEW NATIVE ALERTS
+// =========================================================================
+alertcondition(isPutWriteInflow,  title="[GTI] Put Write Inflow",    message="Institutional PUT WRITE Absorption at Base on {{ticker}}! Look for CE / Long Entries.")
+alertcondition(isCallWriteInflow, title="[GTI] Call Write Capping",   message="Institutional CALL WRITE Capping at Ceiling on {{ticker}}! Overhead Resistance Active.")
+alertcondition(isTrueWave5,       title="[GTI] Wave (5) Exhaustion", message="Wave (5) Exhaustion Climax Triggered on {{ticker}}! Stop Chasing Longs.")
+alertcondition(bull4Flag,         title="[GTI] Whale 4-Flag Long",   message="Whale 4-Flag Long Expansion Triggered on {{ticker}}!")
+alertcondition(bear4Flag,         title="[GTI] Whale 4-Flag Short",  message="Whale 4-Flag Short Breakdown Triggered on {{ticker}}!")

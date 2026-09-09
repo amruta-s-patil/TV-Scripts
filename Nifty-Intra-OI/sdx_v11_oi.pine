@@ -1,0 +1,182 @@
+//@version=6
+// SD-X v11 OI  —  Nifty option chain companion
+//  Runs alongside "SD-X v11 Signals". Kept separate because live option symbols
+//  are dynamic: as the ATM strike moves, each new strike is a NEW unique
+//  request.security() symbol, and TradingView caps a script at 40 of them.
+//  calc_bars_count limits calculation to the most recent bars, so only a handful
+//  of distinct strikes are ever requested. This script shows current data only —
+//  it is not meant to display history.
+indicator("SD-X v11 OI  Nifty Option Chain", "SD-X v11 OI", overlay = true,
+     dynamic_requests = true, calc_bars_count = 20)
+
+// ═══════════════════ Inputs ═══════════════════
+grpO       = "Option chain"
+oiRoot     = input.string("NIFTY", "Root symbol")
+expMode    = input.string("Auto (next weekly)", "Expiry", options = ["Auto (next weekly)", "Manual"])
+expDow     = input.int(3, "Weekly expiry weekday (1=Sun … 7=Sat; Tue=3)", minval = 1, maxval = 7)
+expManual  = input.string("260915", "Manual expiry YYMMDD")
+strikeStep = input.int(50, "Strike interval", minval = 1)
+nStrikes   = input.int(2, "Strikes each side of ATM (2 is safe; 3 may hit the cap)",
+     minval = 1, maxval = 3)
+lotSize    = input.int(75, "Lot size", minval = 1)
+futSym     = input.symbol("NSE:NIFTY1!", "Futures symbol (OI buildup)")
+tblPos     = input.string("Top left", "Table position",
+     options = ["Top left", "Middle left", "Bottom left", "Middle right"])
+
+// ═══════════════════ Expiry / symbols ═══════════════════
+f_ymd(int ts) =>
+    str.format("{0,number,00}{1,number,00}{2,number,00}",
+         year(ts, "Asia/Kolkata") % 100, month(ts, "Asia/Kolkata"), dayofmonth(ts, "Asia/Kolkata"))
+
+f_expiry() =>
+    string res = expManual
+    if expMode != "Manual"
+        int dow   = dayofweek(time, "Asia/Kolkata")
+        int ahead = (expDow - dow + 7) % 7
+        res := f_ymd(time + ahead * 86400000)
+    res
+
+string expStr  = f_expiry()
+bool   isExpiry = expStr == f_ymd(time)
+int    atm      = int(math.round(close / strikeStep) * strikeStep)
+string optBase  = "NSE:" + oiRoot + expStr
+
+// ═══════════════════ Data requests (all unconditional, global scope) ═══════════════════
+// Value now + change since today's first bar, computed in the symbol's own context
+f_dayChg(string sym) =>
+    request.security(sym, timeframe.period,
+         [close, close - ta.valuewhen(ta.change(time("D")) != 0, open, 0)],
+         ignore_invalid_symbol = true, lookahead = barmerge.lookahead_off)
+
+f_px(string sym) =>
+    request.security(sym, timeframe.period, close, ignore_invalid_symbol = true)
+
+float ceATMpx = f_px(optBase + "C" + str.tostring(atm))
+float peATMpx = f_px(optBase + "P" + str.tostring(atm))
+[futOI, futOIc] = f_dayChg(futSym + "_OI")
+
+var array<int>   oStrike = array.new<int>()
+var array<float> oCE     = array.new<float>()
+var array<float> oCEc    = array.new<float>()
+var array<float> oPE     = array.new<float>()
+var array<float> oPEc    = array.new<float>()
+
+array.clear(oStrike)
+array.clear(oCE)
+array.clear(oCEc)
+array.clear(oPE)
+array.clear(oPEc)
+
+float sumCE = 0.0, float sumPE = 0.0
+float sumCEc = 0.0, float sumPEc = 0.0
+float maxCE = 0.0, float maxPE = 0.0
+int   maxCEk = na, int maxPEk = na
+float maxCEc = -1e12, float maxPEc = -1e12
+int   maxCEck = na, int maxPEck = na
+
+for i = -nStrikes to nStrikes
+    int k = atm + i * strikeStep
+    [ceO, ceC] = f_dayChg(optBase + "C" + str.tostring(k) + "_OI")
+    [peO, peC] = f_dayChg(optBase + "P" + str.tostring(k) + "_OI")
+    array.push(oStrike, k)
+    array.push(oCE, ceO)
+    array.push(oCEc, ceC)
+    array.push(oPE, peO)
+    array.push(oPEc, peC)
+    sumCE  += nz(ceO)
+    sumPE  += nz(peO)
+    sumCEc += nz(ceC)
+    sumPEc += nz(peC)
+    if nz(ceO) > maxCE
+        maxCE  := ceO
+        maxCEk := k
+    if nz(peO) > maxPE
+        maxPE  := peO
+        maxPEk := k
+    if nz(ceC, -1e12) > maxCEc
+        maxCEc  := ceC
+        maxCEck := k
+    if nz(peC, -1e12) > maxPEc
+        maxPEc  := peC
+        maxPEck := k
+
+float  pcr    = sumCE > 0 ? sumPE / sumCE : na
+bool   oiBull = sumPEc > sumCEc and sumPEc > 0
+bool   oiBear = sumCEc > sumPEc and sumCEc > 0
+string oiBias = oiBull ? "Bullish — PE writing" : oiBear ? "Bearish — CE writing" : "Neutral"
+
+// Buildup from futures OI vs index price move today
+float idxChg = close - ta.valuewhen(ta.change(time("D")) != 0, open, 0)
+string buildup = na(futOIc) ? "n/a" :
+     idxChg > 0 and futOIc > 0 ? "Long buildup" :
+     idxChg < 0 and futOIc > 0 ? "Short buildup" :
+     idxChg > 0 and futOIc < 0 ? "Short covering" :
+     idxChg < 0 and futOIc < 0 ? "Long unwinding" : "Flat"
+
+// ═══════════════════ Table ═══════════════════
+f_fmt(float x) =>
+    na(x) ? "n/a" :
+     math.abs(x) >= 1e5 ? str.tostring(x / 1e5, "#.##") + "L" :
+     math.abs(x) >= 1e3 ? str.tostring(x / 1e3, "#.#") + "K" : str.tostring(x, "#")
+
+f_fmtChg(float x) =>
+    na(x) ? "n/a" : (x >= 0 ? "+" : "") + f_fmt(x)
+
+f_pos(string s) =>
+    s == "Top left"    ? position.top_left    :
+     s == "Middle left" ? position.middle_left :
+     s == "Bottom left" ? position.bottom_left : position.middle_right
+
+var table ot = table.new(f_pos(tblPos), 5, 12, border_width = 1)
+if barstate.islast
+    color hdr  = color.new(color.gray, 20)
+    color atmC = color.new(color.yellow, 75)
+    table.cell(ot, 0, 0, oiRoot + " " + expStr + (isExpiry ? " ⚠" : ""),
+         text_color = isExpiry ? color.yellow : color.white, bgcolor = hdr, text_size = size.tiny)
+    table.cell(ot, 1, 0, "CE OI", text_color = color.white, bgcolor = hdr, text_size = size.tiny)
+    table.cell(ot, 2, 0, "CE Δ", text_color = color.white, bgcolor = hdr, text_size = size.tiny)
+    table.cell(ot, 3, 0, "PE OI", text_color = color.white, bgcolor = hdr, text_size = size.tiny)
+    table.cell(ot, 4, 0, "PE Δ", text_color = color.white, bgcolor = hdr, text_size = size.tiny)
+    int n = array.size(oStrike)
+    for i = 0 to n - 1
+        int   k   = array.get(oStrike, i)
+        float ce  = array.get(oCE, i)
+        float cec = array.get(oCEc, i)
+        float pe  = array.get(oPE, i)
+        float pec = array.get(oPEc, i)
+        bool  isAtm = k == atm
+        color rowBg = isAtm ? atmC : color.new(color.white, 100)
+        table.cell(ot, 0, i + 1, str.tostring(k) + (isAtm ? " ◄" : ""), bgcolor = rowBg,
+             text_color = color.black, text_size = size.tiny)
+        table.cell(ot, 1, i + 1, f_fmt(ce), bgcolor = k == maxCEk ? color.new(color.red, 70) : rowBg,
+             text_color = color.black, text_size = size.tiny)
+        table.cell(ot, 2, i + 1, f_fmtChg(cec), bgcolor = rowBg,
+             text_color = na(cec) ? color.gray : cec > 0 ? color.red : color.gray, text_size = size.tiny)
+        table.cell(ot, 3, i + 1, f_fmt(pe), bgcolor = k == maxPEk ? color.new(color.green, 70) : rowBg,
+             text_color = color.black, text_size = size.tiny)
+        table.cell(ot, 4, i + 1, f_fmtChg(pec), bgcolor = rowBg,
+             text_color = na(pec) ? color.gray : pec > 0 ? color.green : color.gray, text_size = size.tiny)
+    int r = n + 1
+    table.cell(ot, 0, r, "Total", text_color = color.white, bgcolor = hdr, text_size = size.tiny)
+    table.cell(ot, 1, r, f_fmt(sumCE), text_color = color.white, bgcolor = hdr, text_size = size.tiny)
+    table.cell(ot, 2, r, f_fmtChg(sumCEc), text_color = color.white, bgcolor = hdr, text_size = size.tiny)
+    table.cell(ot, 3, r, f_fmt(sumPE), text_color = color.white, bgcolor = hdr, text_size = size.tiny)
+    table.cell(ot, 4, r, f_fmtChg(sumPEc), text_color = color.white, bgcolor = hdr, text_size = size.tiny)
+    table.cell(ot, 0, r + 1, "PCR " + str.tostring(pcr, "#.##"), text_size = size.tiny,
+         text_color = na(pcr) ? color.gray : pcr > 1.2 ? color.green : pcr < 0.8 ? color.red : color.black)
+    table.cell(ot, 1, r + 1, "Res " + str.tostring(maxCEk), text_color = color.red, text_size = size.tiny)
+    table.cell(ot, 2, r + 1, "CE wr " + str.tostring(maxCEck), text_color = color.red, text_size = size.tiny)
+    table.cell(ot, 3, r + 1, "Sup " + str.tostring(maxPEk), text_color = color.green, text_size = size.tiny)
+    table.cell(ot, 4, r + 1, "PE wr " + str.tostring(maxPEck), text_color = color.green, text_size = size.tiny)
+    table.cell(ot, 0, r + 2, "Bias", text_size = size.tiny)
+    table.cell(ot, 1, r + 2, oiBias, text_size = size.tiny,
+         text_color = oiBull ? color.green : oiBear ? color.red : color.gray)
+    table.cell(ot, 3, r + 2, "Fut OI " + f_fmtChg(futOIc), text_size = size.tiny, text_color = color.gray)
+    table.cell(ot, 4, r + 2, buildup, text_size = size.tiny,
+         text_color = buildup == "Long buildup" or buildup == "Short covering" ? color.green :
+                      buildup == "Short buildup" or buildup == "Long unwinding" ? color.red : color.gray)
+    table.cell(ot, 0, r + 3, "ATM " + str.tostring(atm), text_size = size.tiny)
+    table.cell(ot, 1, r + 3, "CE " + str.tostring(ceATMpx, "#.#"), text_color = color.green, text_size = size.tiny)
+    table.cell(ot, 2, r + 3, "PE " + str.tostring(peATMpx, "#.#"), text_color = color.red, text_size = size.tiny)
+    table.cell(ot, 3, r + 3, "Lot " + str.tostring(lotSize), text_size = size.tiny)
+    table.cell(ot, 4, r + 3, "₹" + str.tostring(nz(ceATMpx) * lotSize, "#,###"), text_size = size.tiny)
