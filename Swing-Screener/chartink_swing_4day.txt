@@ -1,0 +1,16 @@
+( {cash} (
+  market cap > 1000
+  and yearly return on capital employed percentage > 15
+  and yearly debt equity ratio < 1
+  and quarterly indian promoter and group percentage > 40
+  and quarterly net profit/reported profit after tax > 4 quarter ago net profit/reported profit after tax
+  and latest close > 50
+  and latest sma( volume,20 ) > 200000
+  and latest close > latest sma( latest close , 20 )
+  and latest sma( latest close , 50 ) > latest sma( latest close , 200 )
+  and latest rsi( 14 ) > 50
+  and latest rsi( 14 ) < 68
+  and latest avg true range( 14 ) > latest close * 0.012
+  and latest close < latest sma( latest close , 20 ) * 1.06
+  and latest volume > latest sma( volume,20 ) * 1.2
+) )

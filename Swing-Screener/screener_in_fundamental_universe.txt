@@ -1,0 +1,13 @@
+Market Capitalization > 1000 AND
+Return on capital employed > 15 AND
+Return on equity > 12 AND
+Debt to equity < 1 AND
+Promoter holding > 40 AND
+Pledged percentage < 10 AND
+Interest Coverage Ratio > 3 AND
+Sales growth 3Years > 8 AND
+Profit growth 3Years > 10 AND
+Current price > 50 AND
+Volume 1month average > 200000 AND
+Current price > DMA 50 AND
+DMA 50 > DMA 200

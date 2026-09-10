@@ -154,7 +154,7 @@ Every bar passes through six stages. A setup must survive all of them to become 
 | 1\. Trigger | Any of the four entry sources fires (see below). | No setup — nothing plotted |
 | 2\. Filter | VWAP mode satisfied, RSI on the correct side, EMA if enabled. | Blocked: filter |
 | 3\. Risk | Stop distance is at least 20 points and no more than 70. Wider setups are skipped rather than sized badly. | Blocked: risk |
-| 4\. Room | Structural-target mode only: at least "Min R:R" of clear space to the next tier. | Blocked: no room |
+| 4\. Room | At least "Min R:R" of clear space to the next wall — the structural tier in "Structure (gap tiers)" mode, the opposing zone edge (supply for a long, demand for a short) in "Fixed R:R". | Blocked: no room |
 | 5\. Regime | Not inside a Wave (5) lockout; not compressed, if you chose to block entries while compressed. | Blocked: W5 / squeeze |
 | 6\. Gate | Inside the entry window, under the daily trade limit, no open position, past the cooldown. | Blocked: session/limit |
 
@@ -225,7 +225,7 @@ The troubleshooting panel. Read it top to bottom when a day produced no signals.
 | Setups found | Triggers that fired before filtering | Zero with touches above means the rejection test is too strict — set rejection to Loose |
 | Blocked: filter | Setups killed by VWAP / RSI / EMA | High count on a trend day is usually correct behaviour, not a fault |
 | Blocked: risk | Setups needing a stop wider than 70 points | Raise the maximum stop distance if this is persistently high |
-| Blocked: no room | Structural target was too close to be worth the risk | Only appears in "Structure (gap tiers)" mode. Lower Min R:R, or switch to Fixed R:R. |
+| Blocked: no room | The wall ahead was too close to be worth the risk — a short taken just above demand, a long taken into supply | Lower Min R:R to loosen it (0.25 effectively disables it). |
 | Blocked: W5 / squeeze | Setups vetoed by a Wave (5) lockout or by compression | If this is high on days you would have won, shorten the lockout or lengthen the wave lookback |
 | Blocked: session/limit | Outside the window, or over the trade limit, or in cooldown | Widen the entry window if good setups appear late |
 | SIGNALS | What actually fired | — |
@@ -273,7 +273,7 @@ Nine alert conditions are exposed. The first three are the ones to actually set:
 | Zones far above or below price | Pivot-based zones cannot update in a sustained trend because no new pivot confirms. Switch Zone source to "Auto (near price)". |
 | No coloured bars at all, Phase says `(no vol)` | Your feed reports no volume for this symbol. Expected on a spot index. The engine has degraded to price-only tests; whale colours cannot be computed. Set Volume confirmation to "Off" to silence the label, or chart the futures instead. |
 | "Blocked: W5 / squeeze" is eating everything | Either the day is genuinely exhausted, or the lockout is too long for your timeframe. Shorten Lockout bars, or raise Wave peak lookback so fewer bars qualify. |
-| "Blocked: no room" on every setup | You are in structural-target mode with tiers close overhead. Lower Min R:R or switch Target mode to "Fixed R:R". |
+| "Blocked: no room" on every setup | Price is pinned between the zones — usually a low-VIX range day. Lower Min R:R, or widen the zones (raise Auto lookback / Min zone height). |
 | Signals cluster in chop | Raise the cross-index pivot length from 8 to 10 or 12, increase the cooldown, and turn on "Block entries while compressed". |
 | Stops feel too tight | Raise the minimum stop distance above 20 points. Nifty 3-minute noise can exceed 20 points in a volatile session. |
 | Too many context markers on screen | Turn off "Mark injection / belan candles" and "Mark shark / whale flags" under the GTI group. The entry logic is unaffected. |

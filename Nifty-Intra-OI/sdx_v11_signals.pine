@@ -644,12 +644,17 @@ float lTgt = not structTP ? na : close < supMainBot ? supMainBot
      : close < supTgtBot ? supTgtBot : supTgtTop
 float sTgt = not structTP ? na : close > demMainTop ? demMainTop
      : close > demTgtTop ? demTgtTop : demTgtBot
-float lRR  = na(lTgt) or na(lRisk) or lRisk <= 0 ? na : (lTgt - close) / lRisk
-float sRR  = na(sTgt) or na(sRisk) or sRisk <= 0 ? na : (close - sTgt) / sRisk
 // Too little room to the next wall is a reason not to take the trade, not a
-// reason to aim through it.
-bool roomOKL = not structTP or (not na(lRR) and lRR >= minRR)
-bool roomOKS = not structTP or (not na(sRR) and sRR >= minRR)
+// reason to aim through it. Fixed R:R has a wall too - the opposing zone - so
+// the same minRR test runs in every mode, tier or zone edge. 09-Sep-2026 took
+// a 4-flag short 0.3 ATR above demand because roomOK was hardcoded true here.
+float lWall = structTP ? lTgt : supBot
+float sWall = structTP ? sTgt : demTop
+float lRR  = na(lWall) or na(lRisk) or lRisk <= 0 ? na : (lWall - close) / lRisk
+float sRR  = na(sWall) or na(sRisk) or sRisk <= 0 ? na : (close - sWall) / sRisk
+// No zone / no tier yet -> na -> pass, same as before.
+bool roomOKL = na(lRR) or lRR >= minRR
+bool roomOKS = na(sRR) or sRR >= minRR
 float lTP = structTP ? lTgt : close + lRisk * rr
 float sTP = structTP ? sTgt : close - sRisk * rr
 
