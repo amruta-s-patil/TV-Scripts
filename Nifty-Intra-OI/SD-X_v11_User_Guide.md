@@ -156,7 +156,7 @@ Every bar passes through six stages. A setup must survive all of them to become 
 | 3\. Risk | Stop distance is at least 20 points and no more than 70. Wider setups are skipped rather than sized badly. | Blocked: risk |
 | 4\. Room | At least "Min R:R" of clear space to the next wall — the structural tier in "Structure (gap tiers)" mode, the opposing zone edge (supply for a long, demand for a short) in "Fixed R:R". | Blocked: no room |
 | 5\. Regime | Not inside a Wave (5) lockout; not compressed, if you chose to block entries while compressed. | Blocked: W5 / squeeze |
-| 6\. Gate | Inside the entry window, under the daily trade limit, no open position, past the cooldown. | Blocked: session/limit |
+| 6\. Gate | Inside the entry window, under the daily trade limit, past the cooldown. An already-open trade no longer blocks the next signal — several can run at once, capped by "Max trades per day". | Blocked: session/limit |
 
 Stages 2 to 6 mark the bar with a small grey ✕ so you can see, on the chart, exactly where a setup existed and was rejected.
 
@@ -194,7 +194,7 @@ When more than one fires on the same bar the tightest structural stop wins. Any 
 | Entry window | 09:20 – 15:00 | Avoids the opening auction noise and gives a late trade room to work |
 | Expiry-day entry cut-off | 13:00 | Premium decay and gamma make afternoon expiry entries unsuitable for a 3-minute reversion system |
 | Square-off | 15:15 – 15:30 | Every position is closed; nothing is carried overnight |
-| Max trades per day | 3 | Prevents revenge-trading a bad session |
+| Max trades per day | 3 | Prevents revenge-trading a bad session, and caps how many trades can be live at the same time |
 | Cooldown | 6 bars | Stops clustered signals in the same move |
 | One position at a time | Enforced | No pyramiding, no hedging confusion |
 | Wave (5) lockout | 8 bars | Stops you buying the top of an exhausted leg |

@@ -530,9 +530,10 @@ type Trade
     line  tpLn
     label slLb
     label tpLb
-    bool  active
 
-var Trade t = na
+// Several signals can be live at once: you may skip one you do not like and
+// still want the next zone touch marked. Closed trades leave the array.
+var array<Trade> openT = array.new<Trade>()
 var int   lastSigBar  = -1000
 var int   tradesToday = 0
 var int   winsToday   = 0
@@ -570,39 +571,38 @@ if newDay
     cDemT := 0
     cSupT := 0
 
-if not na(t) and t.active
-    line.set_x2(t.enLn, bar_index)
-    line.set_x2(t.slLn, bar_index)
-    line.set_x2(t.tpLn, bar_index)
-    label.set_x(t.slLb, bar_index)
-    label.set_x(t.tpLb, bar_index)
-    bool hitSL = t.isLong ? low  <= t.sl : high >= t.sl
-    bool hitTP = t.isLong ? high >= t.tp : low  <= t.tp
-    if hitSL or hitTP
-        // A bar spanning both is unknowable intrabar: take the stop, never the gift.
-        float ex  = hitSL ? t.sl : t.tp
-        float pts = t.isLong ? ex - t.entry : t.entry - ex
-        ptsToday  += pts
-        winsToday += pts >= 0 ? 1 : 0
-        lossToday += pts <  0 ? 1 : 0
-        t.active  := false
-        label.new(bar_index, ex, (hitTP ? "TARGET" : "STOP") + "  " + str.tostring(t.strike) + (t.isLong ? "CE" : "PE"),
-             style = hitTP ? label.style_label_down : label.style_label_up,
-             color = hitTP ? color.new(color.black, 0) : color.new(color.red, 0),
-             textcolor = color.white, size = size.tiny)
+// Reverse walk so array.remove never shifts an index still to be visited.
+if array.size(openT) > 0
+    for i = array.size(openT) - 1 to 0
+        Trade tr = array.get(openT, i)
+        line.set_x2(tr.enLn, bar_index)
+        line.set_x2(tr.slLn, bar_index)
+        line.set_x2(tr.tpLn, bar_index)
+        label.set_x(tr.slLb, bar_index)
+        label.set_x(tr.tpLb, bar_index)
+        bool hitSL = tr.isLong ? low  <= tr.sl : high >= tr.sl
+        bool hitTP = tr.isLong ? high >= tr.tp : low  <= tr.tp
+        if hitSL or hitTP or forceExit
+            // A bar spanning both is unknowable intrabar: take the stop, never the gift.
+            float ex  = hitSL ? tr.sl : hitTP ? tr.tp : close
+            float pts = tr.isLong ? ex - tr.entry : tr.entry - ex
+            ptsToday  += pts
+            winsToday += pts >= 0 ? 1 : 0
+            lossToday += pts <  0 ? 1 : 0
+            array.remove(openT, i)
+            // Strike on every exit tag: with several live you need to know which.
+            label.new(bar_index, ex,
+                 (hitSL ? "STOP" : hitTP ? "TARGET" : "SQ-OFF") + "  " + str.tostring(tr.strike) + (tr.isLong ? "CE" : "PE"),
+                 style = hitTP and not hitSL ? label.style_label_down : label.style_label_up,
+                 color = hitSL ? color.new(color.red, 0) : hitTP ? color.new(color.black, 0) : color.new(color.gray, 0),
+                 textcolor = color.white, size = size.tiny)
 
-if not na(t) and t.active and forceExit
-    float pts2 = t.isLong ? close - t.entry : t.entry - close
-    ptsToday  += pts2
-    winsToday += pts2 >= 0 ? 1 : 0
-    lossToday += pts2 <  0 ? 1 : 0
-    t.active  := false
-    label.new(bar_index, close, "SQ-OFF", style = label.style_label_left,
-         color = color.new(color.gray, 0), textcolor = color.white, size = size.tiny)
-
-bool tradeOpen = not na(t) and t.active
+bool tradeOpen = array.size(openT) > 0
 bool entryOK   = inEntry and (not isExpiry or inExpE)
-bool canSignal = entryOK and inMkt and not forceExit and not tradeOpen
+// No `not tradeOpen` here: a live trade no longer mutes the next setup. Total
+// exposure is still bounded by maxPerDay; cooldown still stops machine-gunning
+// the same touch bar after bar.
+bool canSignal = entryOK and inMkt and not forceExit
                  and tradesToday < maxPerDay and (bar_index - lastSigBar) > cooldown
 
 // Four entry sources now, each with its own stop anchor. Order is priority:
@@ -719,14 +719,14 @@ f_open(bool isLong, float sl, float risk, float tp, int strike, string src) =>
          style = isLong ? label.style_label_up : label.style_label_down,
          color = isLong ? color.new(color.green, 0) : color.new(color.red, 0), textcolor = color.white, size = size.small)
     Trade.new(isLong = isLong, entry = entry, sl = sl, tp = tp, strike = strike,
-         enLn = en, slLn = sn, tpLn = tn, slLb = sb, tpLb = tb, active = true)
+         enLn = en, slLn = sn, tpLn = tn, slLb = sb, tpLb = tb)
 
 if longSig
-    t := f_open(true, lSL, lRisk, lTP, atmStrike, lSrc)
+    array.push(openT, f_open(true, lSL, lRisk, lTP, atmStrike, lSrc))
     lastSigBar  := bar_index
     tradesToday += 1
 if shortSig
-    t := f_open(false, sSL, sRisk, sTP, atmStrike, sSrc)
+    array.push(openT, f_open(false, sSL, sRisk, sTP, atmStrike, sSrc))
     lastSigBar  := bar_index
     tradesToday += 1
 
