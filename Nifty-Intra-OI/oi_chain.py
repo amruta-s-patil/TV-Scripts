@@ -7,7 +7,7 @@ sdx_v11_oi.pine. Stdlib only.
   python oi_chain.py NIFTY 5 1       # 1 = next expiry instead of nearest
   python oi_chain.py NIFTY 6 --shark # add the Shark hunting matrix
 """
-import datetime, gzip, http.cookiejar, io, json, sys, urllib.error, urllib.parse, urllib.request
+import datetime, gzip, http.cookiejar, io, json, math, sys, urllib.error, urllib.parse, urllib.request
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/122.0 Safari/537.36")
@@ -111,17 +111,39 @@ def chain(rec):
     return out
 
 
-def totals(ch):
-    """Chain-wide read: OI sums, PCR, and the true max-OI strikes (Res / Sup)."""
+LEAN_SIGMA = 0.01          # "near the money" = within ~1% of spot
+LEAN_BAND = 0.10           # below this the chain is balanced, not directional
+
+
+def _weight(k, spot):
+    """Only near-money OI moves price. Far-OTM strikes carry big, permanent
+    put-writing flow (yield selling, hedge overwrites) that never predicts
+    direction; summed raw it swamps the ATM read and pins the bias bullish.
+    ponytail: gaussian off spot, no strike-count window to tune per index."""
+    if not spot:
+        return 1.0
+    return math.exp(-0.5 * ((k - spot) / (LEAN_SIGMA * spot)) ** 2)
+
+
+def totals(ch, spot=None):
+    """Chain-wide read: OI sums, PCR, and the true max-OI strikes (Res / Sup).
+    lean is a distance-weighted ratio in [-1, 1]: what the money near spot did,
+    normalised by how much of it moved - so it is comparable across sessions."""
     if not ch:
-        return dict(ce=0, pe=0, cec=0, pec=0, lean=0, pcr=float("nan"), res=None, sup=None)
+        return dict(ce=0, pe=0, cec=0, pec=0, lean=0.0, pcr=float("nan"), res=None, sup=None)
     ce, pe = sum(r[1] for r in ch), sum(r[3] for r in ch)
     # lean aggregates what each leg did, not just how much OI moved - so a chain
     # full of bought puts reads bearish instead of masquerading as support.
-    lean = sum(_lean(leg_action(r[2], r[7]), CE_BULL, r[2])
-               + _lean(leg_action(r[4], r[8]), PE_BULL, r[4]) for r in ch)
+    num = den = 0.0
+    for r in ch:
+        w = _weight(r[0], spot)
+        for act, table, chg in ((leg_action(r[2], r[7]), CE_BULL, r[2]),
+                                (leg_action(r[4], r[8]), PE_BULL, r[4])):
+            v = _lean(act, table, chg)
+            num += w * v
+            den += w * abs(v)
     return dict(ce=ce, pe=pe, cec=sum(r[2] for r in ch), pec=sum(r[4] for r in ch),
-                lean=lean, pcr=pe / ce if ce else float("nan"),
+                lean=num / den if den else 0.0, pcr=pe / ce if ce else float("nan"),
                 res=max(ch, key=lambda r: r[1])[0], sup=max(ch, key=lambda r: r[3])[0])
 
 
@@ -209,8 +231,9 @@ def print_shark(rs, atm, res=None, sup=None):
 
 
 def bias_tag(lean, pcr):
-    """Headline: the chain-wide positioning lean, and whether PCR agrees with it."""
-    oi = "Bullish" if lean > 0 else "Bearish" if lean < 0 else "Neutral"
+    """Headline: the near-money positioning lean, and whether PCR agrees with it.
+    A lean inside the band is two walls of equal size - a range, not a direction."""
+    oi = "Bullish" if lean > LEAN_BAND else "Bearish" if lean < -LEAN_BAND else "Neutral"
     p = pcr_tag(pcr)
     if oi == "Neutral" or p in ("Neutral", "n/a"):
         return oi if oi != "Neutral" else p
@@ -241,7 +264,7 @@ def rows(rec, n):
 def report(symbol, expiry, stamp, spot, atm, rs, ch=(), shark=False):
     sce, spe = sum(r[1] for r in rs), sum(r[3] for r in rs)
     scec, spec = sum(r[2] for r in rs), sum(r[4] for r in rs)
-    t = totals(list(ch) or rs)                     # whole chain when given, else the window
+    t = totals(list(ch) or rs, spot)               # whole chain when given, else the window
     live, _ = market_live(stamp)
     print(f"\n{symbol} {expiry}   spot {spot}   ATM {atm}   {stamp}"
           f"   [{'LIVE' if live else 'CLOSED'}]\n")
@@ -290,10 +313,11 @@ def selftest():
     assert strike_tag(-100, -50) == "CE unwinding" and strike_tag(-50, -100) == "PE unwinding"
     assert rs[0][7] == -0.5 and rs[0][8] == -0.5, "premium change reaches the row"
     assert strike_tag(0, 0) == "-", "an untouched strike is not an unwind"
-    assert bias_tag(89, 1.5) == "Bullish (confirmed)", bias_tag(89, 1.5)
-    assert bias_tag(89, 0.5) == "Bullish (PCR disagrees)"
-    assert bias_tag(-89, 1.0) == "Bearish", "neutral PCR must not veto the OI read"
-    assert bias_tag(0, 1.5) == "Bullish", "flat positioning falls back to PCR"
+    assert bias_tag(0.9, 1.5) == "Bullish (confirmed)", bias_tag(0.9, 1.5)
+    assert bias_tag(0.9, 0.5) == "Bullish (PCR disagrees)"
+    assert bias_tag(-0.9, 1.0) == "Bearish", "neutral PCR must not veto the OI read"
+    assert bias_tag(0.0, 1.5) == "Bullish", "flat positioning falls back to PCR"
+    assert bias_tag(0.05, 0.5) == "Bearish", "a lean inside the band is two equal walls"
 
     exps = ["08-Sep-2026", "15-Sep-2026", "22-Sep-2026"]
     at_open = datetime.datetime(2026, 9, 8, 10, 0, tzinfo=IST)
@@ -331,8 +355,18 @@ def selftest():
     assert t["res"] == 23650 and t["sup"] == 23650, t          # only 2 strikes in the fixture
     assert t["ce"] == 47250 and t["pcr"] == 2.0, t
     # both legs written on a falling premium: calls against, puts for, puts bigger
-    assert t["lean"] == 47250, t["lean"]
+    assert abs(t["lean"] - 1 / 3) < 1e-9, t["lean"]      # (2k - k) / 3k, unweighted
     assert totals([])["res"] is None and totals([])["lean"] == 0, "empty chain must not raise"
+    assert -1 <= t["lean"] <= 1, "lean is a ratio, not a lot count"
+
+    # the reported bug: far-OTM put writing outvoting the wall right above spot.
+    # 500 pts below spot, 20x the OI - unweighted this reads bullish, and didn't.
+    near = (23450, 0, 100000, 0, 0, 0, 0, -1, 0)         # calls written at the money
+    far = (22950, 0, 0, 0, 300000, 0, 0, 0, -1)          # puts written 2% out, 3x the size
+    assert totals([near, far])["lean"] > 0.4, "unweighted, the far strike wins"
+    assert totals([near, far], 23440)["lean"] < -0.3, totals([near, far], 23440)["lean"]
+    assert _weight(23450, 23440) > 0.9 and _weight(22950, 23440) < 0.2
+    assert _weight(23450, None) == 1.0, "no spot = no weighting, same as before"
 
     report("SELFTEST", "08-Sep-2026", "08-Sep-2026 15:39:00", spot, atm, rs, ch=ch, shark=True)
     print("selftest ok")

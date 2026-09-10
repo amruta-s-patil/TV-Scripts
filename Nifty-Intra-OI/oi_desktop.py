@@ -182,7 +182,7 @@ class App:
             self.expiries = exps
             if list(self.expbox["values"]) != [AUTO] + exps:
                 self.expbox.config(values=[AUTO] + exps)
-        t = totals(chain(rec))                         # Res/Sup/PCR over every strike
+        t = totals(chain(rec), spot)                   # Res/Sup/PCR over every strike
         max_ce, max_pe = t["res"], t["sup"]
         atm_row = next(r for r in rs if r[0] == atm)   # rows() always spans ATM
         lo, hi = rs[0][0], rs[-1][0]
