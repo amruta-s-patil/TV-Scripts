@@ -95,7 +95,7 @@ This is what the coloured candles and the small markers are. None of it fires a 
 | Shark trap | Three same-direction bodies breaking 30-bar isolation, with no fourth | Yellow `TRAP` tag |
 | Whale 4-flag | A fourth consecutive body extends the run | Blue `4F` (long) / black `4F` (short) — **an entry source** |
 | Absorption at base/ceiling | Absorption wick at the day's structural edge, on the right side of VWAP | Contributes an `absorb` entry — **an entry source** |
-| Climax | Outsized volume (or range) into the base or ceiling | Small red / green dot, plus a shelf line |
+| Climax | Outsized volume (or range) into the base or ceiling | Maroon square (bear, above bar) / orange square (bull, below bar), plus a shelf line |
 | Climax shelves | Horizontal memory of a climax bar, tagged with the day of month, with a dashed half-range line | Maroon (low) / orange (high) |
 | CAMDC phase | Where the day sits in Compression → Accumulation → Manipulation → Distribution → Correction | "Phase" row of the Today table |
 
@@ -377,6 +377,6 @@ These points matter more than any setting in this document.
 
 - The 1:3 contra idea — that institutions book at the third projection and the reverse trade becomes attractive — is described in the source session but never given an entry rule. Nothing in this script trades it. The ladder veto only stops the script adding to a move that has already reached its target.
 
-- Validate the lot size against the current NSE contract specification before trading — it is entered manually and defaults to 75.
+- Validate the lot size against the current NSE contract specification before trading — it is entered manually and defaults to 65.
 
 *This document describes a charting tool. It is not investment advice, and nothing in it is a recommendation to buy or sell any instrument. Test on paper before committing capital.*

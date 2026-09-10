@@ -16,7 +16,7 @@ clearDaily = input.bool(true, "Clear cross-index levels each morning", group = g
 
 grpOpt     = "Option sizing (display only)"
 strikeStep = input.int(50, "Strike interval", minval = 1, group = grpOpt)
-lotSize    = input.int(75, "Lot size", minval = 1, group = grpOpt)
+lotSize    = input.int(65, "Lot size", minval = 1, group = grpOpt)
 lots       = input.int(1, "Lots per trade", minval = 1, group = grpOpt)
 deltaATM   = input.float(0.5, "ATM delta (premium estimate)", minval = 0.2, maxval = 0.9, step = 0.05, group = grpOpt)
 expDow     = input.int(3, "Weekly expiry weekday (1=Sun … 7=Sat; Tue=3)", minval = 1, maxval = 7, group = grpOpt)
@@ -713,8 +713,8 @@ plotshape(showFlags and bull3 and not bull4, "Shark trap up",   shape.labeldown,
 plotshape(showFlags and bear3 and not bear4, "Shark trap down", shape.labelup,   location.belowbar, color = color.yellow, text = "TRAP", textcolor = color.black, size = size.tiny)
 plotshape(showFlags and bull4, "Whale 4-flag long",  shape.labelup,   location.belowbar, color = color.blue,  text = "4F", textcolor = color.white, size = size.tiny)
 plotshape(showFlags and bear4, "Whale 4-flag short", shape.labeldown, location.abovebar, color = color.black, text = "4F", textcolor = color.white, size = size.tiny)
-plotshape(climaxDn, "Bear climax", shape.circle, location.abovebar, color = color.new(color.red, 30),   size = size.tiny)
-plotshape(climaxUp, "Bull climax", shape.circle, location.belowbar, color = color.new(color.green, 30), size = size.tiny)
+plotshape(climaxDn, "Bear climax", shape.square, location.abovebar, color = color.maroon, size = size.small)
+plotshape(climaxUp, "Bull climax", shape.square, location.belowbar, color = color.orange, size = size.small)
 
 // ═══════════════════ Trades ═══════════════════
 type Trade

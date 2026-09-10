@@ -30,7 +30,7 @@ SECTIONS = [
   ("candle", dict(body=DN, up=False, mark=("dot", RED, "sig"), label="BUY 23650 PE  zone"),
    "BIG red circle (above) + label",
    "BUY ATM PE. The same on the short side.\n"
-   "Note: the tiny climax dots use the same colours - a trade always has a label."),
+   "Note: circles are trades and injections; climax bars are squares."),
   ("candle", dict(body=DN, up=False, mark=("x", GRAY, "small")),
    "Grey x",
    "A setup existed here and was REJECTED by a filter, risk, room, regime or session\n"
@@ -122,12 +122,12 @@ SECTIONS = [
    "Blue number above a blue candle",
    "Nth institutional buying candle inside the supply zone. A close below that\n"
    "candle's low is the short."),
-  ("candle", dict(body=DN, up=False, mark=("dot", RED, "small")),
-   "Small red dot (above bar)",
+  ("candle", dict(body=DN, up=False, mark=("square", MARO, "small")),
+   "Maroon square (above bar)",
    "Bear climax: outsized volume - or range, on a feed with no volume - into the\n"
    "base. Selling exhaustion. A maroon shelf is drawn at the low."),
-  ("candle", dict(body=UP, up=True, mark=("dot", GREN, "small")),
-   "Small green dot (below bar)",
+  ("candle", dict(body=UP, up=True, mark=("square", ORNG, "small")),
+   "Orange square (below bar)",
    "Bull climax: the same into the ceiling. Buying exhaustion. An orange shelf is\n"
    "drawn at the high."),
  ]),
@@ -221,7 +221,7 @@ def draw_candle(ax, cx, cy, s):
 def draw_mark(ax, cx, ytop, ybot, m, up):
     """Marker above or below the candle, matching Pine's location.* argument."""
     kind, col = m[0], m[1]
-    above = kind in ("tri_dn", "label_dn") or (kind in ("dot", "x", "diamond") and not up)
+    above = kind in ("tri_dn", "label_dn") or (kind in ("dot", "x", "diamond", "square") and not up)
     y = (ytop + 0.22) if above else (ybot - 0.22)
     size = m[2] if len(m) > 2 else "small"
     if kind == "tri_up":
@@ -236,6 +236,8 @@ def draw_mark(ax, cx, ytop, ybot, m, up):
     elif kind == "dot":
         ax.add_patch(Circle((cx, y), 0.21 if size == "sig" else 0.12,
                             fc=col, ec="none", zorder=5))
+    elif kind == "square":
+        ax.add_patch(Rectangle((cx - .17, y - .17), .34, .34, fc=col, ec="none", zorder=5))
     elif kind == "x":
         ax.plot([cx - .15, cx + .15], [y - .15, y + .15], color=col, lw=1.6, zorder=5)
         ax.plot([cx - .15, cx + .15], [y + .15, y - .15], color=col, lw=1.6, zorder=5)
@@ -244,6 +246,36 @@ def draw_mark(ax, cx, ytop, ybot, m, up):
         ax.text(cx, y, m[2], fontsize=6.5, color=tcol, ha="center", va="center",
                 zorder=6, fontweight="bold",
                 bbox=dict(boxstyle="round,pad=0.22", fc=col, ec="none"))
+
+
+# Explanation text is tinted by what the marker means for direction. ponytail:
+# keyword scan over the row's own words, so new rows colour themselves.
+BULL_WORDS = ("bull", "long", "buy ce", "demand", "support", "buying", "absorb l",
+              "green", "lime", "accumulation", "upside", "bounce")
+BEAR_WORDS = ("bear", "short", "buy pe", "supply", "resistance", "selling",
+              "red ", "magenta", "distribution", "downside", "dump", "trap up")
+TXT_BULL, TXT_BEAR, TXT_FLAT = "#1B5E20", "#B71C1C", "#333333"
+
+
+# Rows the keyword scan reads the wrong way round; keyed by a unique name prefix.
+TONE_FIX = {"Normal green": TXT_FLAT, "W5 maroon": TXT_BEAR,
+            "Dashed red line": TXT_BULL, "Maroon shelf": TXT_BULL,
+            "Orange shelf": TXT_BEAR}
+
+
+def tone(name, meaning):
+    """Green / red / grey for the explanation text. The name carries most weight."""
+    def score(txt, w):
+        t = txt.lower()
+        return (w * sum(t.count(k) for k in BULL_WORDS),
+                w * sum(t.count(k) for k in BEAR_WORDS))
+    for k, v in TONE_FIX.items():
+        if name.startswith(k):
+            return v
+    b1, r1 = score(name, 3)
+    b2, r2 = score(meaning, 1)
+    b, r = b1 + b2, r1 + r2
+    return TXT_FLAT if b == r else (TXT_BULL if b > r else TXT_BEAR)
 
 
 def draw_row(ax, top, h, kind, spec, name, meaning, x0=SW_X):
@@ -273,7 +305,7 @@ def draw_row(ax, top, h, kind, spec, name, meaning, x0=SW_X):
                                ec="none", zorder=2))
     ax.text(tx, top - 0.34, name, fontsize=8.8, fontweight="bold", va="center", ha="left")
     ax.text(tx, top - 0.60, meaning, fontsize=7.6, va="top", ha="left",
-            color="#333333", linespacing=1.45)
+            color=tone(name, meaning), linespacing=1.45)
 
 
 def section_height(items):

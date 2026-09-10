@@ -18,7 +18,7 @@ expManual  = input.string("260915", "Manual expiry YYMMDD")
 strikeStep = input.int(50, "Strike interval", minval = 1)
 nStrikes   = input.int(2, "Strikes each side of ATM (2 is safe; 3 may hit the cap)",
      minval = 1, maxval = 3)
-lotSize    = input.int(75, "Lot size", minval = 1)
+lotSize    = input.int(65, "Lot size", minval = 1)
 futSym     = input.symbol("NSE:NIFTY1!", "Futures symbol (OI buildup)")
 tblPos     = input.string("Top left", "Table position",
      options = ["Top left", "Middle left", "Bottom left", "Middle right"])
