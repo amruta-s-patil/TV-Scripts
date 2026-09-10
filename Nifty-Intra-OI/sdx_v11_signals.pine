@@ -67,7 +67,7 @@ minRisk    = input.float(20, "Min stop distance", minval = 1, group = grpT)
 maxRisk    = input.float(70, "Max stop distance", minval = 5, group = grpT)
 rr         = input.float(2.0, "Risk : Reward", minval = 0.5, step = 0.25, group = grpT)
 tpMode     = input.string("Fixed R:R", "Target mode",
-     options = ["Fixed R:R", "Structure (gap tiers)"], group = grpT)
+     options = ["Fixed R:R", "Structure (gap tiers)", "Opening-range ladder"], group = grpT)
 minRR      = input.float(1.0, "Min R:R to the structural target", minval = 0.25, step = 0.25, group = grpT)
 
 grpD       = "Diagnostics"
@@ -108,6 +108,24 @@ vixSym     = input.symbol("NSE:INDIAVIX", "VIX symbol", group = grpV)
 vixLow     = input.float(13, "Low / moderate VIX boundary", minval = 5, step = 0.5, group = grpV)
 vixHigh    = input.float(18, "Moderate / high VIX boundary", minval = 6, step = 0.5, group = grpV)
 
+grpO       = "GTI opening range & day bias"
+useORB     = input.bool(true,  "Track the opening candle", group = grpO)
+orbMin     = input.int(9, "Opening candle length (minutes)", minval = 1, group = grpO)
+fakeTol    = input.float(0.0, "Fake-candle tolerance (points)", minval = 0, step = 0.25, group = grpO)
+biasVeto   = input.bool(false, "Trade only in the opening-break direction", group = grpO)
+ladderN    = input.int(3, "Ladder rungs (1:1 … 1:N)", minval = 1, maxval = 3, group = grpO)
+ladderStop = input.bool(false, "Veto further entries once 1:N is reached", group = grpO)
+showORB    = input.bool(true,  "Draw opening range and ladder", group = grpO)
+
+grpC       = "GTI structural compression"
+compressX  = input.float(0.75, "Compressed when battlefield < (ATR ×)", minval = 0.1, step = 0.05, group = grpC)
+reqCompress = input.bool(false, "Only take entries on compressed days", group = grpC)
+
+grpA       = "GTI zone-attack counter"
+useAttack  = input.bool(true, "Attack-count entries", group = grpA)
+attackMin  = input.int(3, "Attacks before the zone is tradeable", minval = 2, maxval = 6, group = grpA)
+showAttack = input.bool(true, "Number the attack candles", group = grpA)
+
 // ═══════════════════ Core series ═══════════════════
 float atr   = ta.atr(14)
 float vwapV = ta.vwap(hlc3)
@@ -122,6 +140,108 @@ bool newDay  = ta.change(time("D")) != 0
 bool forceExit = inSqOff or (inMkt[1] and not inMkt) or newDay
 bool isExpiry  = dayofweek(time, "Asia/Kolkata") == expDow
 int  atmStrike = int(math.round(close / strikeStep) * strikeStep)
+
+// ═══════════════════ Opening range & day bias (GTI) ═══════════════════
+// The first candle of the day is a fake when it opens on its own high or its own
+// low: no two-way auction happened inside it, so its range is not a fight anyone
+// won. In that case the second candle is the reference instead. Whichever side of
+// the reference candle breaks first owns the rest of the session - that is the
+// only direction worth trading, and the ladder measures the day off its height.
+var int   dayOpenT = na
+var float o1o = na
+var float o1h = na
+var float o1l = na
+var float o2o = na
+var float o2h = na
+var float o2l = na
+var int   dayBias = 0
+var float orbHi = na
+var float orbLo = na
+var bool  orbFake = false
+
+if newDay
+    dayOpenT := na
+    o1o := na
+    o1h := na
+    o1l := na
+    o2o := na
+    o2h := na
+    o2l := na
+    dayBias := 0
+    orbHi := na
+    orbLo := na
+    orbFake := false
+
+if inMkt and useORB
+    if na(dayOpenT)
+        dayOpenT := time
+    int mins = int((time - dayOpenT) / 60000)
+    if mins < orbMin
+        o1o := na(o1o) ? open : o1o
+        o1h := na(o1h) ? high : math.max(o1h, high)
+        o1l := na(o1l) ? low  : math.min(o1l, low)
+    else if mins < orbMin * 2
+        o2o := na(o2o) ? open : o2o
+        o2h := na(o2h) ? high : math.max(o2h, high)
+        o2l := na(o2l) ? low  : math.min(o2l, low)
+
+// A candle is only settled once the window after it has opened, so the reference
+// range never repaints inside its own bars.
+int  minsIn = na(dayOpenT) ? int(na) : int((time - dayOpenT) / 60000)
+bool c1Done = not na(o1h) and not na(minsIn) and minsIn >= orbMin
+bool c2Done = not na(o2h) and not na(minsIn) and minsIn >= orbMin * 2
+if c1Done and na(orbHi)
+    orbFake := (o1h - o1o <= fakeTol) or (o1o - o1l <= fakeTol)
+    if not orbFake
+        orbHi := o1h
+        orbLo := o1l
+if orbFake and c2Done and na(orbHi)
+    orbHi := o2h
+    orbLo := o2l
+
+bool  orbReady = not na(orbHi) and not na(orbLo)
+float orbRange = orbReady ? math.max(orbHi - orbLo, syminfo.mintick) : na
+// First close through either edge sets the bias, and it is latched: a day that
+// breaks up then breaks down is a day GTI does not trade the second break of.
+if orbReady and inMkt and dayBias == 0
+    dayBias := close > orbHi ? 1 : close < orbLo ? -1 : 0
+
+var bool ladderHitU = false
+var bool ladderHitD = false
+if newDay
+    ladderHitU := false
+    ladderHitD := false
+if orbReady and high >= orbHi + orbRange * ladderN
+    ladderHitU := true
+if orbReady and low  <= orbLo - orbRange * ladderN
+    ladderHitD := true
+
+// Ladder rungs are multiples of the opening candle's own height projected from
+// its edges - 1:1, 1:2, 1:3 - not multiples of the stop.
+f_rungUp(float px) =>
+    float r = na
+    for k = 0 to ladderN
+        float lv = orbHi + orbRange * k
+        if lv > px and na(r)
+            r := lv
+    r
+f_rungDn(float px) =>
+    float r = na
+    for k = 0 to ladderN
+        float lv = orbLo - orbRange * k
+        if lv < px and na(r)
+            r := lv
+    r
+
+bool orbDraw = showORB and orbReady
+plot(orbDraw ? orbHi : na, "ORB high", color = color.new(color.blue, 0), style = plot.style_linebr, linewidth = 2)
+plot(orbDraw ? orbLo : na, "ORB low",  color = color.new(color.blue, 0), style = plot.style_linebr, linewidth = 2)
+plot(orbDraw and ladderN >= 1 ? orbHi + orbRange     : na, "1:1 up", color = color.new(color.blue, 45), style = plot.style_linebr)
+plot(orbDraw and ladderN >= 2 ? orbHi + orbRange * 2 : na, "1:2 up", color = color.new(color.blue, 60), style = plot.style_linebr)
+plot(orbDraw and ladderN >= 3 ? orbHi + orbRange * 3 : na, "1:3 up", color = color.new(color.blue, 75), style = plot.style_linebr)
+plot(orbDraw and ladderN >= 1 ? orbLo - orbRange     : na, "1:1 dn", color = color.new(color.blue, 45), style = plot.style_linebr)
+plot(orbDraw and ladderN >= 2 ? orbLo - orbRange * 2 : na, "1:2 dn", color = color.new(color.blue, 60), style = plot.style_linebr)
+plot(orbDraw and ladderN >= 3 ? orbLo - orbRange * 3 : na, "1:3 dn", color = color.new(color.blue, 75), style = plot.style_linebr)
 
 // India VIX regime (request #5). ignore_invalid_symbol keeps a bad ticker from
 // killing the whole script - it returns na and the row reads "n/a" instead.
@@ -235,6 +355,19 @@ f_trimBoxes() =>
         box.delete(array.shift(zBoxes))
 
 bool zoneReady   = not na(supTop) and not na(supBot) and not na(demTop) and not na(demBot)
+
+// ═══════════════════ Structural compression (GTI) ═══════════════════
+// Not the Bollinger-inside-Keltner squeeze further down - that is a volatility
+// read on one bar. This is the battlefield: the clear air between the demand
+// zone's ceiling and the supply zone's floor. When the two sides' areas close on
+// each other nobody on the tape can tell buyer from seller, and the move that
+// follows has to be big enough to separate them again. Latched at the open, so
+// it describes the day rather than the bar.
+var float battle = na
+var bool  structCompressed = false
+if newDay and zoneReady
+    battle := supBot - demTop
+    structCompressed := battle < atr * compressX
 bool zoneChanged = zoneReady and (supTop != pSupTop or demBot != pDemBot)
 bool needNewBox  = zoneReady and (na(curSup) or newDay or (not autoMode and zoneChanged))
 
@@ -429,6 +562,71 @@ bool absUp   = upWick > bodySz * 1.3 and upWick > rng * 0.35
 
 bool instBuy  = f_vol(volMult) and (close > open or dnWick > bodySz * 0.8)
 bool instSell = f_vol(volMult) and (close < open or upWick > bodySz * 0.8)
+// ═══════════════════ Zone attack counter (GTI) ═══════════════════
+// A zone is a wall until the third or fourth time it is hit. Black (selling)
+// candles landing inside demand, or blue (buying) candles landing inside supply,
+// are counted; the count is wiped the moment price clears the opposite zone,
+// which is GTI's "data neutralised". At the threshold the zone has proved it
+// holds and the break of the last attack candle is the trade - away from the
+// zone, not through it. The fired latch is keyed to the count, so the fourth
+// attack can trade again after the third one stopped out.
+var int   atkDem = 0
+var float atkDemHi = na
+var float atkDemLo = na
+var int   atkDemFired = -1
+var int   atkSup = 0
+var float atkSupHi = na
+var float atkSupLo = na
+var int   atkSupFired = -1
+
+if newDay
+    atkDem := 0
+    atkSup := 0
+    atkDemHi := na
+    atkDemLo := na
+    atkSupHi := na
+    atkSupLo := na
+    atkDemFired := -1
+    atkSupFired := -1
+
+bool hitDem = false
+bool hitSup = false
+if zoneReady and inMkt
+    if close > supBot
+        atkDem := 0
+        atkDemHi := na
+        atkDemLo := na
+        atkDemFired := -1
+    else if instSell and low <= demTop
+        atkDem += 1
+        atkDemHi := high
+        atkDemLo := low
+        hitDem := true
+    if close < demTop
+        atkSup := 0
+        atkSupHi := na
+        atkSupLo := na
+        atkSupFired := -1
+    else if instBuy and high >= supBot
+        atkSup += 1
+        atkSupHi := high
+        atkSupLo := low
+        hitSup := true
+
+bool atkLong  = useAttack and atkDem >= attackMin and not na(atkDemHi) and close > atkDemHi and atkDemFired != atkDem
+bool atkShort = useAttack and atkSup >= attackMin and not na(atkSupLo) and close < atkSupLo and atkSupFired != atkSup
+if atkLong
+    atkDemFired := atkDem
+if atkShort
+    atkSupFired := atkSup
+
+if showAttack and hitDem
+    label.new(bar_index, low, str.tostring(atkDem), style = label.style_label_up,
+         color = color.new(color.maroon, 20), textcolor = color.white, size = size.tiny)
+if showAttack and hitSup
+    label.new(bar_index, high, str.tostring(atkSup), style = label.style_label_down,
+         color = color.new(color.blue, 20), textcolor = color.white, size = size.tiny)
+
 // Whale colours need real volume to mean anything; the grey absorption tint
 // is pure shape, so it stays on either way.
 color barCol = not showBars ? na
@@ -605,7 +803,7 @@ bool entryOK   = inEntry and (not isExpiry or inExpE)
 bool canSignal = entryOK and inMkt and not forceExit
                  and tradesToday < maxPerDay and (bar_index - lastSigBar) > cooldown
 
-// Four entry sources now, each with its own stop anchor. Order is priority:
+// Five entry sources now, each with its own stop anchor. Order is priority:
 // the tightest structural stop wins when more than one fires on a bar.
 bool sigZoneL = useZone and rejDem
 bool sigZoneS = useZone and rejSup
@@ -615,17 +813,19 @@ bool sigFlagL = use4Flag and bull4
 bool sigFlagS = use4Flag and bear4
 bool sigAbsL  = useAbsorb and absorbL
 bool sigAbsS  = useAbsorb and absorbS
-bool rawLong  = sigZoneL or sigLvlL or sigFlagL or sigAbsL
-bool rawShort = sigZoneS or sigLvlS or sigFlagS or sigAbsS
+bool sigAtkL  = atkLong
+bool sigAtkS  = atkShort
+bool rawLong  = sigZoneL or sigLvlL or sigFlagL or sigAbsL or sigAtkL
+bool rawShort = sigZoneS or sigLvlS or sigFlagS or sigAbsS or sigAtkS
 
 float flagLo = ta.lowest(low, 4)                  // hoisted: ta.* must run every bar
 float flagHi = ta.highest(high, 4)
 float lBase = sigZoneL ? demBot : sigLvlL ? lvlLowY
-     : sigFlagL ? flagLo : sigAbsL ? low : na
+     : sigFlagL ? flagLo : sigAbsL ? low : sigAtkL ? atkDemLo : na
 float sBase = sigZoneS ? supTop : sigLvlS ? lvlHighY
-     : sigFlagS ? flagHi : sigAbsS ? high : na
-string lSrc = sigZoneL ? "zone" : sigLvlL ? "level" : sigFlagL ? "4-flag" : "absorb"
-string sSrc = sigZoneS ? "zone" : sigLvlS ? "level" : sigFlagS ? "4-flag" : "absorb"
+     : sigFlagS ? flagHi : sigAbsS ? high : sigAtkS ? atkSupHi : na
+string lSrc = sigZoneL ? "zone" : sigLvlL ? "level" : sigFlagL ? "4-flag" : sigAbsL ? "absorb" : "attack"
+string sSrc = sigZoneS ? "zone" : sigLvlS ? "level" : sigFlagS ? "4-flag" : sigAbsS ? "absorb" : "attack"
 float lSL = na(lBase) ? na : math.min(lBase, low)  - atr * slBuf
 float sSL = na(sBase) ? na : math.max(sBase, high) + atr * slBuf
 lSL := na(lSL) ? na : math.min(lSL, close - minRisk)
@@ -640,28 +840,36 @@ bool riskOKS = not na(sRisk) and sRisk <= maxRisk
 // (short) instead of a fixed multiple. Needs gap-adaptive zones to have tiers
 // at all, so it falls back to fixed R:R on every other zone source.
 bool  structTP = tpMode == "Structure (gap tiers)" and gapMode
-float lTgt = not structTP ? na : close < supMainBot ? supMainBot
-     : close < supTgtBot ? supTgtBot : supTgtTop
-float sTgt = not structTP ? na : close > demMainTop ? demMainTop
-     : close > demTgtTop ? demTgtTop : demTgtBot
+bool  ladderTP = tpMode == "Opening-range ladder" and orbReady
+float lTgt = structTP ? (close < supMainBot ? supMainBot
+     : close < supTgtBot ? supTgtBot : supTgtTop) : ladderTP ? f_rungUp(close) : na
+float sTgt = structTP ? (close > demMainTop ? demMainTop
+     : close > demTgtTop ? demTgtTop : demTgtBot) : ladderTP ? f_rungDn(close) : na
 // Too little room to the next wall is a reason not to take the trade, not a
 // reason to aim through it. Fixed R:R has a wall too - the opposing zone - so
 // the same minRR test runs in every mode, tier or zone edge. 09-Sep-2026 took
 // a 4-flag short 0.3 ATR above demand because roomOK was hardcoded true here.
-float lWall = structTP ? lTgt : supBot
-float sWall = structTP ? sTgt : demTop
+bool  lTgtOK = not na(lTgt)
+bool  sTgtOK = not na(sTgt)
+float lWall = lTgtOK ? lTgt : supBot
+float sWall = sTgtOK ? sTgt : demTop
 float lRR  = na(lWall) or na(lRisk) or lRisk <= 0 ? na : (lWall - close) / lRisk
 float sRR  = na(sWall) or na(sRisk) or sRisk <= 0 ? na : (close - sWall) / sRisk
 // No zone / no tier yet -> na -> pass, same as before.
 bool roomOKL = na(lRR) or lRR >= minRR
 bool roomOKS = na(sRR) or sRR >= minRR
-float lTP = structTP ? lTgt : close + lRisk * rr
-float sTP = structTP ? sTgt : close - sRisk * rr
+float lTP = lTgtOK ? lTgt : close + lRisk * rr
+float sTP = sTgtOK ? sTgt : close - sRisk * rr
 
 // Exhaustion lockout and compression are regime vetoes: the setup was real,
 // the tape is just the wrong shape to take it.
-bool regimeOKL = not w5LockL and not (blockSqz and squeeze)
-bool regimeOKS = not w5LockS and not (blockSqz and squeeze)
+// Day bias, structural compression and the 1:N exhaustion all veto rather than
+// trigger, so they join the regime stage and are counted in the same DIAG row.
+bool biasOKL = not biasVeto or dayBias ==  1
+bool biasOKS = not biasVeto or dayBias == -1
+bool compOK  = not reqCompress or structCompressed
+bool regimeOKL = not w5LockL and not (blockSqz and squeeze) and biasOKL and compOK and not (ladderStop and ladderHitU)
+bool regimeOKS = not w5LockS and not (blockSqz and squeeze) and biasOKS and compOK and not (ladderStop and ladderHitD)
 
 bool longSig  = canSignal and bullFilt and rawLong  and riskOKL and roomOKL and regimeOKL
 bool shortSig = canSignal and bearFilt and rawShort and riskOKS and roomOKS and regimeOKS
@@ -734,7 +942,7 @@ if shortSig
 float estPrem = ptsToday * deltaATM
 float estRs   = estPrem * lotSize * lots
 
-var table st = table.new(position.top_right, 2, 9, border_width = 1)
+var table st = table.new(position.top_right, 2, 11, border_width = 1)
 if showStats and barstate.islast
     table.cell(st, 0, 0, "Today", text_color = color.white, bgcolor = color.new(color.gray, 20), text_size = size.tiny)
     table.cell(st, 1, 0, str.tostring(tradesToday) + "/" + str.tostring(maxPerDay),
@@ -758,6 +966,14 @@ if showStats and barstate.islast
     if showPhase
         table.cell(st, 0, 8, "Phase", text_size = size.tiny)
         table.cell(st, 1, 8, phase + (volOn ? "" : "  (no vol)"), text_color = phaseCol, text_size = size.tiny)
+    table.cell(st, 0, 9, "Battlefield", text_size = size.tiny)
+    table.cell(st, 1, 9, na(battle) ? "n/a" : str.tostring(battle, "#.#") + (structCompressed ? "  COMPRESSED" : "  open"),
+         text_color = structCompressed ? color.purple : color.gray, text_size = size.tiny)
+    table.cell(st, 0, 10, "Day bias", text_size = size.tiny)
+    table.cell(st, 1, 10, not orbReady ? "waiting for opening candle"
+         : (dayBias == 1 ? "LONG  buy-on-dip" : dayBias == -1 ? "SHORT  sell-on-rise" : "unbroken")
+           + "  [" + str.tostring(orbLo, "#") + "-" + str.tostring(orbHi, "#") + "]" + (orbFake ? " c2" : ""),
+         text_color = dayBias == 1 ? color.green : dayBias == -1 ? color.red : color.gray, text_size = size.tiny)
 
 float demDistATR = zoneReady ? math.abs(close - demTop) / atr : na
 float supDistATR = zoneReady ? math.abs(supBot - close) / atr : na
@@ -785,7 +1001,7 @@ if showDiag and barstate.islast
     table.cell(dg, 0, 6, "Blocked: no room", text_size = size.tiny)
     table.cell(dg, 1, 6, str.tostring(cRoomL), text_color = color.orange, text_size = size.tiny)
     table.cell(dg, 2, 6, str.tostring(cRoomS), text_color = color.orange, text_size = size.tiny)
-    table.cell(dg, 0, 7, "Blocked: W5 / squeeze", text_size = size.tiny)
+    table.cell(dg, 0, 7, "Blocked: regime", text_size = size.tiny)
     table.cell(dg, 1, 7, str.tostring(cRegL), text_color = color.orange, text_size = size.tiny)
     table.cell(dg, 2, 7, str.tostring(cRegS), text_color = color.orange, text_size = size.tiny)
     table.cell(dg, 0, 8, "Blocked: session/limit", text_size = size.tiny)
@@ -808,3 +1024,8 @@ alertcondition(bull4, "SD-X Whale 4-flag long", "Whale 4-flag expansion up")
 alertcondition(bear4, "SD-X Whale 4-flag short", "Whale 4-flag breakdown")
 alertcondition(absorbL, "SD-X Absorption at base", "Absorption wick at the base, holding VWAP")
 alertcondition(absorbS, "SD-X Absorption at ceiling", "Absorption wick at the ceiling, capped by VWAP")
+alertcondition(orbReady and dayBias != 0 and dayBias[1] == 0, "SD-X Opening break", "Opening candle broken — day bias is set")
+alertcondition(atkLong,  "SD-X Zone attack long",  "Demand held its Nth attack — break of the last black candle")
+alertcondition(atkShort, "SD-X Zone attack short", "Supply held its Nth attack — break of the last blue candle")
+alertcondition(ladderHitU and not ladderHitU[1], "SD-X Ladder 1:N up", "Opening-range ladder target reached to the upside")
+alertcondition(ladderHitD and not ladderHitD[1], "SD-X Ladder 1:N down", "Opening-range ladder target reached to the downside")

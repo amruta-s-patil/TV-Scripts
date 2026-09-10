@@ -10,6 +10,8 @@ SD-X is a pair of TradingView indicators for intraday Nifty trading on a 3-minut
 
 It started as a pure mean-reversion system: price rejects a supply or demand zone, or bounces off a level where BankNifty previously turned, and momentum agrees. This version adds a ported **GTI engine** — order-flow reading through bar colour, candle shape, flag runs and climax shelves — which contributes two continuation entry sources of its own and a set of vetoes that stop the reversion trades you should not be taking. It is still deliberately selective: on a strong one-way trend day it will often produce no signals at all.
 
+This version also ports three ideas from a GTI trading session: the **opening candle** and the day bias it sets, **structural compression** of the battlefield between the zones, and the **zone attack counter**. All three are described in sections 3.8 to 3.10. Two of them can act as hard gates that silence the script on most days, and both are off by default — read section 10 before turning them on.
+
 The package is split into two scripts because TradingView caps a single indicator at 40 unique data requests, and a live option chain uses a new request every time the ATM strike moves.
 
 | **Script** | **What it does** | **History** |
@@ -110,7 +112,51 @@ A `W5` tag is printed when price makes a new extreme that RSI does **not** confi
 
 These vetoes are counted in the "Blocked: W5 / squeeze" row of DIAG, so you can see exactly what they cost you.
 
-### 3.8 India VIX regime
+### 3.8 Opening range and day bias
+
+Three thick blue lines' worth of structure, added in this version and adapted from a GTI session: the opening candle owns the day.
+
+**The opening candle.** The script accumulates the first *N* minutes of the session into one synthetic candle (default 9 minutes; use 5 or 15 if that suits your chart). Its high and low are drawn as a thick blue pair.
+
+**The fake-candle rule.** If that candle opens exactly on its own high, or exactly on its own low, no two-way auction happened inside it — one side simply pushed from the bell. GTI treats such a candle as information-free and uses the **second** candle of the same length instead. The Day bias row is tagged `c2` when this substitution happened. "Fake-candle tolerance" widens the equality test from exact to a few points; leave it at 0 unless your feed's opening print is noisy.
+
+**The bias.** The first close through either edge of the reference candle sets the day's direction and **latches it for the session**: a break up means buy-on-dip only, a break down means sell-on-rise only. A day that breaks up and then breaks down does not flip — GTI does not trade the second break.
+
+**The ladder.** The reference candle's own height, projected in 1:1, 1:2 and 1:3 multiples from each edge, drawn as fading blue lines. These are the day's realistic profit stations, measured off the auction rather than off your stop. Set Target mode to "Opening-range ladder" and the script aims at the next unreached rung. Once 1:3 is tagged, institutions are booking — the original direction is spent, which is why "Veto further entries once 1:N is reached" exists.
+
+| **Setting** | **Default** | **Effect** |
+|:---|:---|:---|
+| Track the opening candle | On | Builds the range and the bias; drawing and the Day bias row depend on it |
+| Opening candle length | 9 minutes | GTI's own preference. 5 and 15 both work; 9 has no special magic |
+| Fake-candle tolerance | 0 points | How close to its own high/low the open must be to count as fake |
+| Trade only in the opening-break direction | **Off** | The hard gate. Turn it on to enforce one-side-per-day |
+| Ladder rungs | 3 | How many 1:N projections to draw and target |
+| Veto further entries once 1:N is reached | Off | Stops adding to a move that has already paid out |
+
+### 3.9 Structural compression — the battlefield
+
+Distinct from the purple squeeze shading, which is a Bollinger-inside-Keltner volatility read on a single bar. **Structural compression is the clear air between the demand zone's ceiling and the supply zone's floor** — the ground the two sides are still fighting over. When it collapses, buyers and sellers are transacting in the same prices and nobody can tell them apart, so the move that resolves it has to be large enough to separate them again.
+
+It is measured once, at the day's first bar, from the zone edges the script is already drawing, and reported in the **Battlefield** row of the Today table as a point figure plus `COMPRESSED` or `open`. Compressed means the gap is under 0.75 ATR by default.
+
+This is the precondition GTI puts under everything else: a compressed morning is what makes the opening break worth trusting. "Only take entries on compressed days" enforces it. It is off by default because it will silence the script entirely on many perfectly tradeable days.
+
+### 3.10 Zone attack counter
+
+The GTI framing: a zone is a wall until the third or fourth time somebody hits it. The first two attacks get ignored, the third gets a response, the fourth starts the fight.
+
+The script counts **black (institutional selling) candles that land inside the demand zone**, and **blue (institutional buying) candles that land inside the supply zone**, numbering each one on the chart. The count is wiped the moment price clears the opposite zone — the day's read has been neutralised and starts again.
+
+At the threshold (default 3) the zone has demonstrably held, and the trade is the break of the last attack candle **away from the zone**:
+
+- 3+ black candles in demand, then a close above the last one's high → long, stop under that candle's low.
+- 3+ blue candles in supply, then a close below the last one's low → short, stop above that candle's high.
+
+The fired-latch is keyed to the count, so if the third attack's trade stops out, a fourth attack re-arms the setup — which is exactly the sequence GTI describes.
+
+This entry source is labelled `attack` on the entry label. It depends on the whale bar colours, so **on a feed with no volume it will produce far fewer signals** (see the note on volume in 3.6).
+
+### 3.11 India VIX regime
 
 A daily India VIX read drives the "Regime" row of the Today table, and is advice only — it changes no logic.
 
@@ -122,7 +168,7 @@ A daily India VIX read drives the "Regime" row of the Today table, and is advice
 
 The point is that in a high-VIX session an OTM option can lose money on a correct directional call, because implied volatility collapses faster than delta pays. Going ITM trades premium cost for a smaller vega exposure.
 
-### 3.9 Open interest (companion script)
+### 3.12 Open interest (companion script)
 
 OI is the number of contracts outstanding at each strike. Rising OI alone does not say who is trading it — the same rise means fresh writing (a wall) if the premium fell, or fresh buying (a punt) if the premium rose. Each leg is read against its own premium move into one of four actions:
 
@@ -154,13 +200,13 @@ Every bar passes through six stages. A setup must survive all of them to become 
 | 1\. Trigger | Any of the four entry sources fires (see below). | No setup — nothing plotted |
 | 2\. Filter | VWAP mode satisfied, RSI on the correct side, EMA if enabled. | Blocked: filter |
 | 3\. Risk | Stop distance is at least 20 points and no more than 70. Wider setups are skipped rather than sized badly. | Blocked: risk |
-| 4\. Room | At least "Min R:R" of clear space to the next wall — the structural tier in "Structure (gap tiers)" mode, the opposing zone edge (supply for a long, demand for a short) in "Fixed R:R". | Blocked: no room |
-| 5\. Regime | Not inside a Wave (5) lockout; not compressed, if you chose to block entries while compressed. | Blocked: W5 / squeeze |
+| 4\. Room | At least "Min R:R" of clear space to the next wall — the structural tier in "Structure (gap tiers)" mode, the next ladder rung in "Opening-range ladder" mode, the opposing zone edge in "Fixed R:R". | Blocked: no room |
+| 5\. Regime | Not inside a Wave (5) lockout; not compressed if you chose to block that; **on the right side of the day bias if that veto is on; on a structurally compressed day if that is required; and not past the 1:N ladder rung if that veto is on.** | Blocked: regime |
 | 6\. Gate | Inside the entry window, under the daily trade limit, past the cooldown. An already-open trade no longer blocks the next signal — several can run at once, capped by "Max trades per day". | Blocked: session/limit |
 
 Stages 2 to 6 mark the bar with a small grey ✕ so you can see, on the chart, exactly where a setup existed and was rejected.
 
-### The four entry sources
+### The five entry sources
 
 Each carries its own stop anchor, and the source is printed on the entry label so you always know which one fired.
 
@@ -170,6 +216,7 @@ Each carries its own stop anchor, and the source is printed on the entry label s
 | `level` | Price bounces off an unbroken BankNifty cross-index level | The level | Reversion |
 | `4-flag` | A fourth consecutive same-direction body extends an isolated run | Extreme of the last 4 bars | Continuation |
 | `absorb` | Absorption wick at the day's base or ceiling, on the right side of VWAP | The bar's own extreme | Reversion |
+| `attack` | The zone survived N institutional attacks (default 3) and price closes back through the last attack candle | That candle's opposite extreme | Reversion |
 
 When more than one fires on the same bar the tightest structural stop wins. Any source can be switched off individually under "Entry sources".
 
@@ -179,7 +226,7 @@ When more than one fires on the same bar the tightest structural stop wins. Any 
 
 - Red line = stop loss, placed beyond the structure that was defended, plus half an ATR, then floored at 20 points and capped at 70.
 
-- Black line = target: twice the risk by default, or the next structural tier in "Structure (gap tiers)" mode.
+- Black line = target: twice the risk by default, the next structural tier in "Structure (gap tiers)" mode, or the next 1:N rung in "Opening-range ladder" mode. Every mode falls back to the fixed multiple when its own target is unavailable — before the opening range settles, for instance.
 
 - The SL and target labels also show the expected premium move, calculated from the ATM delta setting. A 30-point index stop at 0.5 delta shows as "prem −15".
 
@@ -199,6 +246,10 @@ When more than one fires on the same bar the tightest structural stop wins. Any 
 | One position at a time | Enforced | No pyramiding, no hedging confusion |
 | Wave (5) lockout | 8 bars | Stops you buying the top of an exhausted leg |
 | Levels cleared each morning | On | Yesterday's BankNifty pivots do not leak into today |
+| Opening candle | First 9 minutes | The reference range; skipped and replaced by the second candle if it opens on its own high or low |
+| Day bias | Latched, no flip | The first break of the opening range owns the session |
+| Battlefield measurement | At the day's first bar | Compression describes the day, not the bar, so it is not recomputed intraday |
+| Attack count reset | On clearing the opposite zone | GTI's "data neutralised" — the previous attacks no longer count |
 
 ## 6. Reading the two tables
 
@@ -211,6 +262,8 @@ Trades taken versus the daily limit, wins, losses, net index points, an estimate
 | VIX | India VIX, coloured green / orange / red by regime |
 | Regime | Regime name and the strike selection it implies |
 | Phase | The current CAMDC phase. `(no vol)` means the feed has no volume and the engine is running price-only. |
+| Battlefield | Points of clear air between the zones at the open, tagged `COMPRESSED` or `open`. Compressed days are the ones GTI trades. |
+| Day bias | `LONG buy-on-dip`, `SHORT sell-on-rise`, or `unbroken` while the opening range still holds, with the range in brackets. `c2` means the first candle was fake and the second was used. |
 
 The Phase row is the fastest read on the chart. **1 Compression** and **2 Accumulation** are the phases where reversion entries work; **4 Distribution** is where the 4-flag continuation entries live; **3 Manipulation** is where you get stopped out for no reason.
 
@@ -226,7 +279,7 @@ The troubleshooting panel. Read it top to bottom when a day produced no signals.
 | Blocked: filter | Setups killed by VWAP / RSI / EMA | High count on a trend day is usually correct behaviour, not a fault |
 | Blocked: risk | Setups needing a stop wider than 70 points | Raise the maximum stop distance if this is persistently high |
 | Blocked: no room | The wall ahead was too close to be worth the risk — a short taken just above demand, a long taken into supply | Lower Min R:R to loosen it (0.25 effectively disables it). |
-| Blocked: W5 / squeeze | Setups vetoed by a Wave (5) lockout or by compression | If this is high on days you would have won, shorten the lockout or lengthen the wave lookback |
+| Blocked: regime | Setups vetoed by a Wave (5) lockout, by compression, by the day-bias gate, by the compressed-days-only gate, or by the 1:N ladder veto | If this is high on days you would have won, shorten the lockout, lengthen the wave lookback, or check whether a GTI gate you turned on is doing the blocking |
 | Blocked: session/limit | Outside the window, or over the trade limit, or in cooldown | Widen the entry window if good setups appear late |
 | SIGNALS | What actually fired | — |
 | Zone / VWAP / RSI | Live values: the demand zone band, then VWAP and RSI | A sanity check that the filters are seeing what you are |
@@ -237,7 +290,7 @@ One row per strike around ATM with CE OI, CE change, PE OI and PE change. The AT
 
 ## 7. Alerts
 
-Nine alert conditions are exposed. The first three are the ones to actually set:
+Fourteen alert conditions are exposed. The first three are the ones to actually set:
 
 | **Alert** | **Fires when** |
 |:---|:---|
@@ -246,24 +299,33 @@ Nine alert conditions are exposed. The first three are the ones to actually set:
 | SD-X Wave 5 top / bottom | Exhaustion — stop chasing that side |
 | SD-X Whale 4-flag long / short | A continuation run extends |
 | SD-X Absorption at base / ceiling | An absorption wick holds the day's edge |
+| SD-X Opening break | The opening candle breaks and the day bias is set |
+| SD-X Zone attack long / short | A zone survived its Nth attack and the last attack candle is broken |
+| SD-X Ladder 1:N up / down | The opening-range ladder target is reached — the original move has paid out |
 
 ## 8. Daily workflow
 
 1.  Before the open, glance at the OI table. Note the max-OI call strike (resistance) and put strike (support) — these often bracket the day's range. Check the VIX regime row and pick your strike accordingly.
 
-2.  Read the Phase row through the morning. It tells you which kind of entry the day is likely to offer.
+2.  At the open, read the **Battlefield** row. `COMPRESSED` says the two sides are on top of each other and the day should resolve one way — those are the days the GTI method is built for. `open` says there is room between the zones and the day can drift; expect chop and take fewer trades.
 
-3.  Wait for a circle. Do not anticipate; the filters exist precisely to stop you taking the setups that look obvious but fail. A `W5` tag on your side means stand down for eight bars, no exceptions.
+3.  Watch the **Day bias** row through the first fifteen to twenty minutes. It stays `unbroken` until the opening candle breaks, then names the only direction worth trading. A `c2` tag means the first candle opened on its own high or low and was discarded.
 
-4.  On a green circle, buy the ATM CE named in the label; on a red circle, buy the ATM PE. Note the premium you actually paid, and note the source on the label — a `4-flag` entry is a continuation trade and behaves differently from a `zone` reversion.
+4.  Read the Phase row through the morning. It tells you which kind of entry the day is likely to offer.
 
-5.  Set your stop on the premium: subtract the "prem −" figure from the SL label from your entry premium. Do the same with the "prem +" figure for the target.
+5.  Wait for a circle. Do not anticipate; the filters exist precisely to stop you taking the setups that look obvious but fail. A `W5` tag on your side means stand down for eight bars, no exceptions.
 
-6.  Cross-check the OI bias. A long while heavy call writing is being added just above your target is a lower-quality trade; consider taking a smaller size or booking earlier.
+6.  On a green circle, buy the ATM CE named in the label; on a red circle, buy the ATM PE. Note the premium you actually paid, and note the source on the label — a `4-flag` entry is a continuation trade and behaves differently from a `zone` reversion.
 
-7.  Exit at the stop, the target, or 15:15 — whichever comes first. Never carry.
+7.  Set your stop on the premium: subtract the "prem −" figure from the SL label from your entry premium. Do the same with the "prem +" figure for the target.
 
-8.  At the close, read the Today and DIAG tables and log the result. After two weeks you will know whether the settings suit your market conditions.
+8.  Cross-check the OI bias. A long while heavy call writing is being added just above your target is a lower-quality trade; consider taking a smaller size or booking earlier.
+
+9.  Book into the ladder rungs. 1:1 is the first honest exit, 1:2 is the common one, 1:3 is where institutions book and the move usually stalls. After 1:3 prints, the higher-probability trade is the contra, not another entry in the same direction — the script will not take one for you, and the ladder veto only stops it adding to the move.
+
+10. Exit at the stop, the target, or 15:15 — whichever comes first. Never carry.
+
+11. At the close, read the Today and DIAG tables and log the result. After two weeks you will know whether the settings suit your market conditions.
 
 ## 9. Troubleshooting
 
@@ -275,6 +337,11 @@ Nine alert conditions are exposed. The first three are the ones to actually set:
 | "Blocked: W5 / squeeze" is eating everything | Either the day is genuinely exhausted, or the lockout is too long for your timeframe. Shorten Lockout bars, or raise Wave peak lookback so fewer bars qualify. |
 | "Blocked: no room" on every setup | Price is pinned between the zones — usually a low-VIX range day. Lower Min R:R, or widen the zones (raise Auto lookback / Min zone height). |
 | Signals cluster in chop | Raise the cross-index pivot length from 8 to 10 or 12, increase the cooldown, and turn on "Block entries while compressed". |
+| Day bias never leaves `unbroken` | Price stayed inside the opening candle all session. On a 9-minute range that is rare; on a 15-minute one it is not. Either lower the opening candle length or accept it as a no-trade day. |
+| Every setup shows "Blocked: regime" after you enabled a GTI gate | Expected. "Trade only in the opening-break direction" halves the tradeable setups by construction, and "Only take entries on compressed days" removes most days entirely. Turn one on at a time and watch the SIGNALS row for a fortnight before adding the other. |
+| No `attack` entries ever fire | The counter needs blue and black whale bars, which need real volume. On a spot index there are none. Chart the futures, or accept that this source is inactive. |
+| Attack numbers reset constantly | Price is crossing between the zones, which neutralises the count by design. It means the zones are too close together or too narrow, not that the counter is broken. |
+| Ladder rungs are absurdly far away | A wide opening candle projects a wide ladder. On a gap-and-run open the 1:3 rung can be a whole day's range away — use Fixed R:R or the gap tiers on those days rather than aiming at it. |
 | Stops feel too tight | Raise the minimum stop distance above 20 points. Nifty 3-minute noise can exceed 20 points in a volatile session. |
 | Too many context markers on screen | Turn off "Mark injection / belan candles" and "Mark shark / whale flags" under the GTI group. The entry logic is unaffected. |
 | Option chain shows n/a everywhere | The expiry is wrong (check the weekday setting, or use Manual for a holiday-shifted week), or your TradingView plan does not include NSE option OI data. Fall back to `oi_chain.py` or `oi_desktop.py`. |
@@ -295,6 +362,20 @@ These points matter more than any setting in this document.
 - Cross-index levels are based on an observed tendency, not a mechanical relationship. Correlation between Nifty and BankNifty varies from day to day.
 
 - Option buying carries a high probability of small losses offset by fewer large gains. Position sizing and the daily trade cap matter more to the outcome than signal quality.
+
+- **The GTI additions come from a recorded teaching session, not from a tested edge.** They were adopted because the reasoning is coherent and the mechanics are cheap to compute, not because they have been validated on this instrument. The presenter demonstrated them by scrolling back over selected days on his own chart, which is the weakest form of evidence there is. Treat all three as hypotheses under test.
+
+- **The day-bias veto is the single most destructive setting in the script.** It removes one entire direction for the whole session on the strength of one candle's break, and that break can be a false one. Enable it alone, log a fortnight, and compare the SIGNALS row and the win rate against the same period without it before you keep it.
+
+- **"Only take entries on compressed days" will produce no signals for days at a time.** That is what it is for. If you find yourself widening the compression threshold to get trades back, you have removed the filter and kept only its cost.
+
+- The battlefield measurement is taken once, at the day's first bar, from whatever zone mode you have selected. In "Auto (near price)" mode those edges are a trailing 40-bar range, which spans yesterday and today at 09:15 — close to the two-day structure the method assumes, but not identical to it. In pivot modes it can be measuring something considerably older. Check the Battlefield figure against the chart before trusting it.
+
+- The attack counter reads whale bar colours, which on a feed without volume do not exist. It is not a fallback-safe source the way the candle-shape tests are.
+
+- **The GTI stop-loss discipline is much tighter than this script's default.** The method caps a Nifty stop at roughly 20 points and a BankNifty stop at roughly 35, on the grounds that a correct read does not need more. SD-X ships with "Max stop distance" at 70. If you are trading the GTI rules, set that to 20 for Nifty or 35 for BankNifty and expect the "Blocked: risk" count to rise sharply — that rise is the filter working, not a fault.
+
+- The 1:3 contra idea — that institutions book at the third projection and the reverse trade becomes attractive — is described in the source session but never given an entry rule. Nothing in this script trades it. The ladder veto only stops the script adding to a move that has already reached its target.
 
 - Validate the lot size against the current NSE contract specification before trading — it is entered manually and defaults to 75.
 

@@ -114,6 +114,14 @@ SECTIONS = [
   ("candle", dict(body=DN, up=False, mark=("label_dn", BLCK, "4F")),
    "4F black tag (above bar)",
    "Whale 4-flag short: the mirror. Also an entry source."),
+  ("candle", dict(body=BLCK, up=False, mark=("label_up", MARO, "3")),
+   "Maroon number under a black candle",
+   "Nth institutional selling candle inside the demand zone. At the threshold\n"
+   "(default 3) the zone has held, and a close above that candle's high is a long."),
+  ("candle", dict(body=BLUE, up=True, mark=("label_dn", BLUE, "3")),
+   "Blue number above a blue candle",
+   "Nth institutional buying candle inside the supply zone. A close below that\n"
+   "candle's low is the short."),
   ("candle", dict(body=DN, up=False, mark=("dot", RED, "small")),
    "Small red dot (above bar)",
    "Bear climax: outsized volume - or range, on a feed with no volume - into the\n"
@@ -153,6 +161,14 @@ SECTIONS = [
   ("line", dict(color=TEAL, ls="--", lw=1.6, tag=""),
    "Dashed half-shelf",
    "The midpoint of the climax bar - the first place the move usually pauses."),
+  ("line", dict(color="#2962ff", ls="-", lw=2.4, tag=""),
+   "Thick blue line pair",
+   "The opening candle's high and low. Fake opens (open == high, or open == low)\n"
+   "are skipped and the second candle is used instead."),
+  ("line", dict(color="#2962ff", ls="-", lw=1.0, tag=""),
+   "Faint blue lines",
+   "Ladder rungs: the opening candle's height projected in 1:1, 1:2 and 1:3\n"
+   "multiples from each edge. Book into them; 1:3 is where institutions book too."),
   ("line", dict(color="#ff9800", ls="-", lw=1.8, tag="VWAP"),
    "Orange line",
    "Session VWAP, the primary bias filter: longs above, shorts below, unless Stretch\n"
