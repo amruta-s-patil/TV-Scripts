@@ -206,6 +206,24 @@ The optional Shark hunting matrix shows this per-leg action for every strike in 
 
 If your TradingView plan has no NSE F&O OI entitlement, `oi_chain.py` prints the same table from NSE's public endpoint. `oi_desktop.py` is the same data as a small always-on-top window instead of a terminal dump: pick the symbol (NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY) and expiry, set how many strikes each side of ATM and the auto-refresh interval, and it polls NSE on its own, pausing automatically once the feed's own timestamp shows the market closed.
 
+### 3.13 Shark flow (companion pane script)
+
+`sdx_v11_sharks.pine` answers one question the chart alone can answer without any option data: **where did the big lots print today, and which way did they lean?** It makes no data requests at all, so it runs on a TradingView plan with no NSE F&O entitlement. Load it in its own pane under the signals script.
+
+It uses the signals script's own whale-bar test (3.6) — volume above 1.35× its 20-bar average, direction from the bar's body and wicks — so a blue bar on the chart is a buy column here and a black bar a sell column. A bar that qualifies both ways (wide wicks both sides) is a fight nobody won and counts as zero.
+
+| **Element** | **What it shows** |
+|:---|:---|
+| Columns | Each whale bar's volume, blue for institutional buying, black for selling |
+| Line | Today's cumulative signed whale volume — buying minus selling since the open. Green above the neutral band, red below, grey inside it |
+| Sharks | The verdict: **Bullish**, **Bearish** or **Neutral**. The band is 10% of the day's gross whale volume, so it self-scales between a quiet morning and expiry day |
+| Flow today | The net figure and how many whale bars went each way |
+| Big buy / Big sell | The single loudest whale bar each side, with the price it closed at and the time. That level is where the sharks showed their hand — treat it as support (buy) or resistance (sell) until it is closed through |
+
+Alerts: "SD-X Sharks turn bullish / bearish" fire when the line crosses out of the neutral band.
+
+What it is not: a read of *positions*. Open interest is positions; this is traded volume on a spot index, which TradingView synthesises from the constituents. It says who was aggressive on the tape today, not what they are holding. For the positions read, use the desktop OI window's `intraday` view (§3.12), which has the option chain and premiums the chart does not.
+
 ## 4. How a signal is produced
 
 Every bar passes through six stages. A setup must survive all of them to become a circle on the chart. The diagnostic table counts how many setups die at each stage, which is what makes the system debuggable.

@@ -52,6 +52,9 @@ a new symbol every time the ATM strike moves, so the chain lives in its own scri
 **Adding a `request.security()` call to the signals script is a design decision, not a detail.**
 The comment at the top of each file states its budget; keep both accurate.
 
+- [sdx_v11_sharks.pine](Nifty-Intra-OI/sdx_v11_sharks.pine) — whale-bar flow pane; zero security
+  calls, so it works on a plan with no NSE F&O data. Its whale-bar test must stay identical to
+  the one in the signals script.
 - [GTI-pro.pine](Nifty-Intra-OI/GTI-pro.pine) is the upstream order-flow engine that the GTI
   sections of the signals script were ported from. It is reference, not a dependency.
 

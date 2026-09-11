@@ -1,0 +1,96 @@
+//@version=6
+// SD-X v11 Sharks  —  whale-bar flow, no option data needed
+//  Where the big lots printed today and which way they leaned. Reads the chart's
+//  own volume, so it works on a plan with no NSE F&O entitlement. Zero
+//  request.security() calls. Same whale-bar test as the signals script (guide
+//  3.6): a blue bar there is a buy column here, a black bar a sell column.
+//  Load it in its own pane under "SD-X v11 Signals".
+indicator("SD-X v11 Sharks  whale-bar flow", "SD-X Sharks", overlay = false, format = format.volume)
+
+// ═══════════════════ Inputs ═══════════════════
+volMult  = input.float(1.35, "Whale volume multiplier", minval = 1.0, step = 0.05)
+volLen   = input.int(20, "Volume average length", minval = 5)
+band     = input.float(0.10, "Neutral band (share of today's whale volume)", minval = 0.0, maxval = 0.5, step = 0.05)
+showTbl  = input.bool(true, "Show verdict table")
+
+// ═══════════════════ Whale bars ═══════════════════
+// Identical to the signals script so the two never disagree about a bar.
+bool  newDay = ta.change(time("D")) != 0
+float volSma = ta.sma(volume, volLen)
+bool  whale  = not na(volSma) and volSma > 0 and volume > volSma * volMult
+float bodySz = math.abs(open - close)
+float upWick = high - math.max(open, close)
+float dnWick = math.min(open, close) - low
+bool  instBuy  = whale and (close > open or dnWick > bodySz * 0.8)
+bool  instSell = whale and (close < open or upWick > bodySz * 0.8)
+// A bar that is both - wide wicks both sides - is a fight nobody won: zero.
+float signed = instBuy and not instSell ? volume : instSell and not instBuy ? -volume : 0.0
+
+// ═══════════════════ Today's flow ═══════════════════
+// Cumulative signed whale volume since the open. The neutral band scales off
+// the day's gross whale volume, so it reads the same on a dead morning and on
+// expiry. "Big buy / sell" is the single loudest bar each side and the price
+// it closed at - that level is where the sharks showed their hand.
+var float flow = 0.0, var float gross = 0.0
+var int   nBuy = 0,    var int   nSell = 0
+var float bigBuyV  = 0.0, var float bigBuyPx  = na, var int bigBuyT  = na
+var float bigSellV = 0.0, var float bigSellPx = na, var int bigSellT = na
+if newDay
+    flow := 0.0
+    gross := 0.0
+    nBuy := 0
+    nSell := 0
+    bigBuyV := 0.0
+    bigBuyPx := na
+    bigBuyT := na
+    bigSellV := 0.0
+    bigSellPx := na
+    bigSellT := na
+if signed != 0
+    flow  += signed
+    gross += math.abs(signed)
+    if signed > 0
+        nBuy += 1
+        if volume > bigBuyV
+            bigBuyV := volume
+            bigBuyPx := close
+            bigBuyT := time
+    else
+        nSell += 1
+        if volume > bigSellV
+            bigSellV := volume
+            bigSellPx := close
+            bigSellT := time
+
+bool   bull = gross > 0 and flow >  gross * band
+bool   bear = gross > 0 and flow < -gross * band
+string verdict = gross == 0 ? "no whales yet" : bull ? "Bullish" : bear ? "Bearish" : "Neutral"
+color  vCol    = bull ? color.green : bear ? color.red : color.gray
+
+// ═══════════════════ Plots ═══════════════════
+plot(signed, "Whale bar", style = plot.style_columns,
+     color = signed > 0 ? color.new(color.blue, 30) : signed < 0 ? color.new(color.black, 30) : na)
+plot(flow, "Shark flow (today)", color = vCol, linewidth = 2)
+hline(0, "Zero", color = color.new(color.gray, 60))
+
+f_fmt(float v) =>
+    float a = math.abs(v)
+    a >= 1e6 ? str.tostring(v / 1e6, "#.##") + "M" : a >= 1e3 ? str.tostring(v / 1e3, "#.#") + "K" : str.tostring(v, "#")
+f_at(float px, int t) =>
+    na(px) ? "-" : str.tostring(px, "#") + " @ " + str.format_time(t, "HH:mm", "Asia/Kolkata")
+
+var table st = table.new(position.top_right, 2, 4, border_width = 1)
+if showTbl and barstate.islast
+    table.cell(st, 0, 0, "Sharks", text_color = color.white, bgcolor = color.new(color.gray, 20), text_size = size.tiny)
+    table.cell(st, 1, 0, verdict, text_color = color.white, bgcolor = color.new(vCol, 20), text_size = size.tiny)
+    table.cell(st, 0, 1, "Flow today", text_size = size.tiny)
+    table.cell(st, 1, 1, (flow >= 0 ? "+" : "") + f_fmt(flow) + "  (" + str.tostring(nBuy) + " buy / " + str.tostring(nSell) + " sell)",
+         text_color = vCol, text_size = size.tiny)
+    table.cell(st, 0, 2, "Big buy", text_size = size.tiny)
+    table.cell(st, 1, 2, f_at(bigBuyPx, bigBuyT), text_color = color.blue, text_size = size.tiny)
+    table.cell(st, 0, 3, "Big sell", text_size = size.tiny)
+    table.cell(st, 1, 3, f_at(bigSellPx, bigSellT), text_color = color.black, text_size = size.tiny)
+
+// ═══════════════════ Alerts ═══════════════════
+alertcondition(bull and not bull[1], "SD-X Sharks turn bullish", "Whale flow today crossed into bullish")
+alertcondition(bear and not bear[1], "SD-X Sharks turn bearish", "Whale flow today crossed into bearish")
