@@ -179,6 +179,17 @@ OI is the number of contracts outstanding at each strike. Rising OI alone does n
 | Covering | Down | Up | Writers buying back — the wall is being removed |
 | Unwinding | Down | Down | Longs closing out |
 
+Which way an action leans depends on the leg it happened on — calls and puts read mirror-image:
+
+| **Action** | **On a call (CE)** | **On a put (PE)** |
+|:---|:---|:---|
+| Writing | Bearish — resistance wall | Bullish — support floor |
+| Buildup | Bullish — call buyers | **Bearish — put buyers** |
+| Covering | Bullish — resistance lifting | Bearish — floor lifting |
+| Unwinding | Bearish — call longs quitting | Bullish — put longs quitting |
+
+The one that trips people up is **PE buildup**: it is *not* put writing. Put OI rising while the put premium also rises means fresh put *buyers*, which is bearish. Put writing (OI up, premium down) is the bullish one.
+
 | **Reading** | **Interpretation** |
 |:---|:---|
 | Signal column | Whichever leg (CE or PE) moved the most OI at that strike, tagged with its action, e.g. "CE writing" or "PE covering" |
@@ -287,6 +298,37 @@ The troubleshooting panel. Read it top to bottom when a day produced no signals.
 ### Option chain (top left, companion script)
 
 One row per strike around ATM with CE OI, CE change, PE OI and PE change. The ATM row is highlighted and marked with an arrow; the highest-OI CE and PE cells are shaded. Summary rows give totals, PCR, the support and resistance strikes, where today's writing is concentrated, the overall bias, and the futures buildup. The last row shows live ATM CE and PE premiums with the rupee cost of one lot.
+
+### The desktop window (`oi_desktop.py`), column by column
+
+The toolbar sets what is fetched: symbol (NIFTY / BANKNIFTY / FINNIFTY / MIDCPNIFTY), expiry (`auto (weekly)` picks the nearest), how many **strikes** either side of ATM, and the auto-refresh interval in **sec**. `auto` turns polling on or off, `on top` keeps the window above everything else, `shark` adds the last four columns, and `↻` forces one refresh.
+
+| **Column** | **What it shows** |
+|:---|:---|
+| Strike | The strike price. The ATM strike is coloured yellow and its whole row is shaded. |
+| CE OI | Total call open interest at that strike. The highest-OI call strike in the chain is shaded red — that is resistance. |
+| CE Δ | Today's change in call OI. Green when falling, red when rising (rising call OI is usually a wall going up above you). |
+| PE OI | Total put open interest. The highest-OI put strike is shaded green — that is support. |
+| PE Δ | Today's change in put OI. Green when rising, red when falling. |
+| CE LTP / PE LTP | Live premium for that strike's call and put. This is what separates writing from buying — see §3.12. |
+| Signal | Whichever leg moved the most OI at that strike, tagged with its action: `CE writing`, `PE buildup`, and so on. Coloured by which way that action leans. |
+
+The `shark` checkbox adds four more columns — the same strikes judged leg by leg instead of one headline per row:
+
+| **Column** | **What it shows** |
+|:---|:---|
+| CE | What the call leg did on its own: writing / buildup / covering / unwinding, coloured bullish or bearish for a *call*. |
+| PE | The same for the put leg, coloured for a *put* — so `buildup` shows red here and green in the CE column. |
+| Net | The strike's verdict once both legs are weighted by the OI they moved. `Neutral` when the score is inside a band set at 10% of the loudest strike on screen, so it self-scales between a quiet morning and expiry day. |
+| Note | Flags on that strike: `ATM`, `RES` / `SUP` (the chain's max-OI call / put strike), `PIN` (both legs genuinely being written — the strike is pinned), `VAC` (both legs shrinking — the walls are coming off and the range can give way). PIN and VAC print in yellow. |
+
+Three summary lines sit under the ladder:
+
+| **Line** | **What it shows** |
+|:---|:---|
+| First | Symbol and expiry, spot, ATM strike, chain PCR with its tag, then `▶` and the overall chain bias — green bullish, red bearish. |
+| Second | `Res` and `Sup` (max-OI call and put strikes, with `↑` or `↓` if that wall sits outside the strikes on screen), whole-chain CE and PE OI with today's change, and the ATM strike's own signal. These are computed over the entire chain, not just the visible window. |
+| Third | NSE's own feed timestamp and `LIVE`, or `CLOSED — auto-refresh paused` once that timestamp shows the session is over. |
 
 ## 7. Alerts
 
