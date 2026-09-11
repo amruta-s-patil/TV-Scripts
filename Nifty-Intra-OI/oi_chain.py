@@ -111,6 +111,27 @@ def chain(rec):
     return out
 
 
+def mark(rec):
+    """Snapshot every strike's OI and premium - the baseline for an intraday read.
+    NSE's own change fields are measured from yesterday's close, which on a flat
+    day hides the whole session: 11-Sep-2026 rallied 110 points off the open and
+    the chain never left "Bearish" because spot ended where it started."""
+    return {r[0]: (r[1], r[3], r[5], r[6]) for r in chain(rec)}
+
+
+def rebase(rs, base):
+    """Same row shape as rows()/chain(), with the four change fields measured
+    from `base` instead of the previous close. Every downstream read - tags,
+    shark matrix, lean - works unchanged on the result. A strike the baseline
+    has not seen enters it now, at zero: no history is no history, not a
+    day-old delta dressed up as an intraday one."""
+    out = []
+    for k, co, cc, po, pc, cp, pp, cpc, ppc in rs:
+        bco, bpo, bcp, bpp = base.setdefault(k, (co, po, cp, pp))
+        out.append((k, co, co - bco, po, po - bpo, cp, pp, cp - bcp, pp - bpp))
+    return out
+
+
 LEAN_SIGMA = 0.01          # "near the money" = within ~1% of spot
 LEAN_BAND = 0.10           # below this the chain is balanced, not directional
 
@@ -367,6 +388,17 @@ def selftest():
     assert totals([near, far], 23440)["lean"] < -0.3, totals([near, far], 23440)["lean"]
     assert _weight(23450, 23440) > 0.9 and _weight(22950, 23440) < 0.2
     assert _weight(23450, None) == 1.0, "no spot = no weighting, same as before"
+
+    base = mark(rec)
+    rb = rebase(rs, base)
+    assert [r[0] for r in rb] == [r[0] for r in rs] and len(rb[0]) == 9, "rebase keeps the row shape"
+    assert all(r[2] == 0 and r[4] == 0 and r[7] == 0 and r[8] == 0 for r in rb), \
+        "first read off the baseline is flat, whatever NSE's day change says"
+    later = (23650, 23650 + 100, 0, 47300, 0, 0.8, 2.0, 0, 0)      # CE OI +100, premium -0.2
+    assert strike_tag(*[rebase([later], base)[0][i] for i in (2, 4, 7, 8)]) == "CE writing", \
+        "intraday: OI up on a falling premium since the mark is a wall built today"
+    assert rebase([(23800, 5, 0, 0, 0, 1, 1, 0, 0)], base)[0][2] == 0 and base[23800][0] == 5, \
+        "an unseen strike enters the baseline at zero delta"
 
     report("SELFTEST", "08-Sep-2026", "08-Sep-2026 15:39:00", spot, atm, rs, ch=ch, shark=True)
     print("selftest ok")

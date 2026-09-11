@@ -37,7 +37,7 @@ Two shaded boxes: salmon for supply above price, teal for demand below. They mar
 
 | **Mode** | **How the zone is built** | **When to use** |
 |:---|:---|:---|
-| Auto (near price) | Supply = highest high of the last 40 bars down to that level minus one ATR. Demand mirrors it from the lowest low. | Default. The zone slides with price, so it is always reachable — even in a strong trend. |
+| Auto (near price) | Supply = highest high of the 40 bars *before* the current one, down to that level minus one ATR. Demand mirrors it from the lowest low. | Default. The zone slides with price, so it is always reachable — even in a strong trend. The live bar is excluded so that a breakout bar can close *above* supply; with it included, no bar ever could, and every long at a new high was refused for lack of room. |
 | Daily gap-adaptive | Built at 09:15 from yesterday's high, low and close against today's open. A gap down makes yesterday's close the cap; a gap up makes it the floor; a flat open uses plain prior-day structure. Also draws pale teal **target tiers**. | Gap days, and whenever you want structural targets instead of a fixed multiple. |
 | Previous candle | Yesterday's daily high to its body top (supply); body bottom to its low (demand). | Swing context. Often far from price intraday. |
 | Last pivot | The most recent confirmed swing high/low on the zone timeframe. | Range days. Warning: in a sustained trend no new pivot confirms, so the zone can strand hundreds of points away. |
@@ -133,6 +133,8 @@ Three thick blue lines' worth of structure, added in this version and adapted fr
 | Ladder rungs | 3 | How many 1:N projections to draw and target |
 | Veto further entries once 1:N is reached | Off | Stops adding to a move that has already paid out |
 
+**The shadow rows.** GTI's "buy on dip" after an upward break often means a dip *under VWAP*, which this script's primary filter refuses on principle. Rather than let the bias override the filter on the strength of one candle's break, the DIAG table paper-trades every setup that the filter alone blocked while the bias agreed — same stop, same target, same cooldown — and reports the count and the running points in the two **Shadow** rows. Nothing about it changes what fires. Log it for a fortnight. If the shadow points are consistently positive, the exception worth adding is a narrow one: a with-bias entry under VWAP only when the dip lands back inside the opening range, which is the retest GTI actually describes. If they are not, the filter was right and the question is closed.
+
 ### 3.9 Structural compression — the battlefield
 
 Distinct from the purple squeeze shading, which is a Bollinger-inside-Keltner volatility read on a single bar. **Structural compression is the clear air between the demand zone's ceiling and the supply zone's floor** — the ground the two sides are still fighting over. When it collapses, buyers and sellers are transacting in the same prices and nobody can tell them apart, so the move that resolves it has to be large enough to separate them again.
@@ -145,7 +147,7 @@ This is the precondition GTI puts under everything else: a compressed morning is
 
 The GTI framing: a zone is a wall until the third or fourth time somebody hits it. The first two attacks get ignored, the third gets a response, the fourth starts the fight.
 
-The script counts **black (institutional selling) candles that land inside the demand zone**, and **blue (institutional buying) candles that land inside the supply zone**, numbering each one on the chart. The count is wiped the moment price clears the opposite zone — the day's read has been neutralised and starts again.
+The script counts **black (institutional selling) candles that land inside the demand zone**, and **blue (institutional buying) candles that land inside the supply zone**, numbering each one on the chart. The count is wiped in two cases: price clears the opposite zone — the day's read has been neutralised and starts again — or price closes through the zone itself, because a wall that broke held nothing and its attacks stop being evidence. (In Auto zone mode the edges trail price and cannot be closed through, so only the first reset ever applies there.)
 
 At the threshold (default 3) the zone has demonstrably held, and the trade is the break of the last attack candle **away from the zone**:
 
@@ -198,6 +200,8 @@ The one that trips people up is **PE buildup**: it is *not* put writing. Put OI 
 | Chain bias | Every leg's action is signed bullish/bearish and weighted by the OI it moved, then summed across the whole chain — not just total OI change — and cross-checked against PCR: "confirmed" when they agree, "PCR disagrees" when they don't |
 | Buildup (futures) | Futures OI change against the day's price move: long buildup, short buildup, short covering, or long unwinding |
 
+**Which baseline.** NSE's change fields — and therefore every action, verdict and the chain bias — are measured from *yesterday's close*. That is a positioning read for the day, and on a day that ends where it started it can look nothing like the session you watched: on 11-Sep-2026 the index rallied 110 points off the open, the chain read "Bearish" throughout, and it was right — the rally was sold into a written-call ceiling and fully retraced by 11:00. To see what a *move* did to positioning, the desktop window has an **intraday** toggle and a **mark** button (see the desktop section in §6): every delta, tag and verdict is then measured from the mark instead of the previous close, and the status line says which baseline is in force. Read the two side by side — the day read says where the walls are; the intraday read says whether the current move is building them or taking them down.
+
 The optional Shark hunting matrix shows this per-leg action for every strike in the window (`--shark` on the command line, or the "shark" checkbox in the desktop app), plus a net verdict and a PIN/VAC flag: PIN means both legs are genuinely being written (the strike is pinned), VAC means both are shrinking (the walls are coming off).
 
 If your TradingView plan has no NSE F&O OI entitlement, `oi_chain.py` prints the same table from NSE's public endpoint. `oi_desktop.py` is the same data as a small always-on-top window instead of a terminal dump: pick the symbol (NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY) and expiry, set how many strikes each side of ATM and the auto-refresh interval, and it polls NSE on its own, pausing automatically once the feed's own timestamp shows the market closed.
@@ -217,7 +221,7 @@ Every bar passes through six stages. A setup must survive all of them to become 
 
 Stages 2 to 6 mark the bar with a small grey ✕ so you can see, on the chart, exactly where a setup existed and was rejected.
 
-### The five entry sources
+### The six entry sources
 
 Each carries its own stop anchor, and the source is printed on the entry label so you always know which one fired.
 
@@ -228,6 +232,7 @@ Each carries its own stop anchor, and the source is printed on the entry label s
 | `4-flag` | A fourth consecutive same-direction body extends an isolated run | Extreme of the last 4 bars | Continuation |
 | `absorb` | Absorption wick at the day's base or ceiling, on the right side of VWAP | The bar's own extreme | Reversion |
 | `attack` | The zone survived N institutional attacks (default 3) and price closes back through the last attack candle | That candle's opposite extreme | Reversion |
+| `expand` | A range-expansion bar (≥ 1.4 ATR, with volume) within 3 bars of a squeeze, closing in the top or bottom quarter of its range, in the direction of the day bias | The bar's own extreme | **Momentum** — the only source that buys strength. Added after 11-Sep-2026, when a 45-point bar out of compression touched no zone, level or attack candle and the 3-bar run it completed was a "trap" by the flag rule. It is exempt from the room test — the zone it closes into is the one it is breaking — and ignores the target mode: it always takes its own fixed **"Expansion bar R:R"** (default 1.5, under "Entry sources"), lower than the 2R the reversion sources ask for, because a bar that has just run 1.4 ATR has less left to give. The risk stage still refuses a bar that ran further than the maximum stop. Turn it off under "Entry sources" if you want the script purely mean-reverting again |
 
 When more than one fires on the same bar the tightest structural stop wins. Any source can be switched off individually under "Entry sources".
 
@@ -251,16 +256,16 @@ When more than one fires on the same bar the tightest structural stop wins. Any 
 |:---|:---|:---|
 | Entry window | 09:20 – 15:00 | Avoids the opening auction noise and gives a late trade room to work |
 | Expiry-day entry cut-off | 13:00 | Premium decay and gamma make afternoon expiry entries unsuitable for a 3-minute reversion system |
-| Square-off | 15:15 – 15:30 | Every position is closed; nothing is carried overnight |
+| Square-off | 15:15 – 15:30 | Every position is closed; nothing is carried overnight. The script's clock is the spot chart, which still ends at 15:30; NSE F&O trades until 15:40 (since 3 Aug 2026) and the cash closing auction runs 15:15–15:35 (since 7 Sep 2026), so 15:15 is deliberately *before* both — do not push it later |
 | Max trades per day | 3 | Prevents revenge-trading a bad session, and caps how many trades can be live at the same time |
 | Cooldown | 6 bars | Stops clustered signals in the same move |
-| One position at a time | Enforced | No pyramiding, no hedging confusion |
+| Several positions at once | Allowed, capped by the daily limit | A live trade no longer mutes the next setup (see section 4); the trade cap and cooldown bound total exposure |
 | Wave (5) lockout | 8 bars | Stops you buying the top of an exhausted leg |
 | Levels cleared each morning | On | Yesterday's BankNifty pivots do not leak into today |
 | Opening candle | First 9 minutes | The reference range; skipped and replaced by the second candle if it opens on its own high or low |
 | Day bias | Latched, no flip | The first break of the opening range owns the session |
 | Battlefield measurement | At the day's first bar | Compression describes the day, not the bar, so it is not recomputed intraday |
-| Attack count reset | On clearing the opposite zone | GTI's "data neutralised" — the previous attacks no longer count |
+| Attack count reset | On clearing the opposite zone, or closing through the zone itself | GTI's "data neutralised" — and a broken zone did not hold its attacks, so they no longer count |
 
 ## 6. Reading the two tables
 
@@ -294,6 +299,8 @@ The troubleshooting panel. Read it top to bottom when a day produced no signals.
 | Blocked: session/limit | Outside the window, or over the trade limit, or in cooldown | Widen the entry window if good setups appear late |
 | SIGNALS | What actually fired | — |
 | Zone / VWAP / RSI | Live values: the demand zone band, then VWAP and RSI | A sanity check that the filters are seeing what you are |
+| Shadow: bias-only | Setups the VWAP / RSI / EMA filter refused while the day bias agreed with them, and which every later stage would have passed. Paper-traded, never plotted, never counted against the daily cap | Measurement only — see the note under 3.8 before acting on it |
+| Shadow W / L / pts | Wins, losses and index points of those paper trades today, with the real stop and target | A run of positive days is the evidence needed before any "bias overrides VWAP" exception is worth building. One good day is not |
 
 ### Option chain (top left, companion script)
 
@@ -301,15 +308,17 @@ One row per strike around ATM with CE OI, CE change, PE OI and PE change. The AT
 
 ### The desktop window (`oi_desktop.py`), column by column
 
-The toolbar sets what is fetched: symbol (NIFTY / BANKNIFTY / FINNIFTY / MIDCPNIFTY), expiry (`auto (weekly)` picks the nearest), how many **strikes** either side of ATM, and the auto-refresh interval in **sec**. `auto` turns polling on or off, `on top` keeps the window above everything else, `shark` adds the last four columns, and `↻` forces one refresh.
+The toolbar sets what is fetched: symbol (NIFTY / BANKNIFTY / FINNIFTY / MIDCPNIFTY), expiry (`auto (weekly)` picks the nearest), how many **strikes** either side of ATM, and the auto-refresh interval in **sec**. `auto` turns polling on or off, `on top` keeps the window above everything else, `shark` adds the last four columns, `intraday` switches every delta and read to the intraday baseline, `mark` restarts that baseline from the latest fetch, and `↻` forces one refresh.
+
+The intraday baseline is the first fetch of the day (the window re-marks itself when NSE's date rolls over), or the last press of `mark`. Start the window at the open, or press `mark` at 09:20 once the opening auction is out of the numbers. With `intraday` on, CE Δ / PE Δ, the Signal, the shark columns and the chain bias are all measured from the mark; the OI totals, Res / Sup and PCR are unaffected because they are levels, not changes. A strike that enters the window later (the ATM moved) starts from zero — there is no intraday history for it, and none is invented. The status line reads `Δ since HH:MM` or `Δ vs prev close` so you always know which read you are looking at.
 
 | **Column** | **What it shows** |
 |:---|:---|
 | Strike | The strike price. The ATM strike is coloured yellow and its whole row is shaded. |
 | CE OI | Total call open interest at that strike. The highest-OI call strike in the chain is shaded red — that is resistance. |
-| CE Δ | Today's change in call OI. Green when falling, red when rising (rising call OI is usually a wall going up above you). |
+| CE Δ | Change in call OI — since yesterday's close, or since the mark with `intraday` on. Green when falling, red when rising (rising call OI is usually a wall going up above you). |
 | PE OI | Total put open interest. The highest-OI put strike is shaded green — that is support. |
-| PE Δ | Today's change in put OI. Green when rising, red when falling. |
+| PE Δ | Change in put OI on the same baseline. Green when rising, red when falling. |
 | CE LTP / PE LTP | Live premium for that strike's call and put. This is what separates writing from buying — see §3.12. |
 | Signal | Whichever leg moved the most OI at that strike, tagged with its action: `CE writing`, `PE buildup`, and so on. Coloured by which way that action leans. |
 
@@ -343,6 +352,7 @@ Fourteen alert conditions are exposed. The first three are the ones to actually 
 | SD-X Absorption at base / ceiling | An absorption wick holds the day's edge |
 | SD-X Opening break | The opening candle breaks and the day bias is set |
 | SD-X Zone attack long / short | A zone survived its Nth attack and the last attack candle is broken |
+| SD-X Expansion long / short | An expansion bar out of a squeeze, with the day bias, closing near its extreme (fires whether or not the source is enabled for entries) |
 | SD-X Ladder 1:N up / down | The opening-range ladder target is reached — the original move has paid out |
 
 ## 8. Daily workflow
@@ -382,7 +392,7 @@ Fourteen alert conditions are exposed. The first three are the ones to actually 
 | Day bias never leaves `unbroken` | Price stayed inside the opening candle all session. On a 9-minute range that is rare; on a 15-minute one it is not. Either lower the opening candle length or accept it as a no-trade day. |
 | Every setup shows "Blocked: regime" after you enabled a GTI gate | Expected. "Trade only in the opening-break direction" halves the tradeable setups by construction, and "Only take entries on compressed days" removes most days entirely. Turn one on at a time and watch the SIGNALS row for a fortnight before adding the other. |
 | No `attack` entries ever fire | The counter needs blue and black whale bars, which need real volume. On a spot index there are none. Chart the futures, or accept that this source is inactive. |
-| Attack numbers reset constantly | Price is crossing between the zones, which neutralises the count by design. It means the zones are too close together or too narrow, not that the counter is broken. |
+| Attack numbers reset constantly | Price is crossing between the zones, or closing through one of them, which neutralises the count by design. It means the zones are too close together or too narrow, not that the counter is broken. |
 | Ladder rungs are absurdly far away | A wide opening candle projects a wide ladder. On a gap-and-run open the 1:3 rung can be a whole day's range away — use Fixed R:R or the gap tiers on those days rather than aiming at it. |
 | Stops feel too tight | Raise the minimum stop distance above 20 points. Nifty 3-minute noise can exceed 20 points in a volatile session. |
 | Too many context markers on screen | Turn off "Mark injection / belan candles" and "Mark shark / whale flags" under the GTI group. The entry logic is unaffected. |
@@ -419,6 +429,8 @@ These points matter more than any setting in this document.
 
 - The 1:3 contra idea — that institutions book at the third projection and the reverse trade becomes attractive — is described in the source session but never given an entry rule. Nothing in this script trades it. The ladder veto only stops the script adding to a move that has already reached its target.
 
-- Validate the lot size against the current NSE contract specification before trading — it is entered manually and defaults to 65.
+- Validate the lot size against the current NSE contract specification before trading — it is entered manually and defaults to 65 (the Nifty lot since the January 2026 series).
+
+- Expiry-day detection is a fixed weekday (Tuesday by default), not an exchange calendar. In a week where Tuesday is a holiday NSE expires on the previous working day; the script will not know, so set "Weekly expiry weekday" for that week by hand or accept a 13:00 cut-off on the wrong day. The same applies to the companion OI script's expiry selector.
 
 *This document describes a charting tool. It is not investment advice, and nothing in it is a recommendation to buy or sell any instrument. Test on paper before committing capital.*

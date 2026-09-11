@@ -1,0 +1,28 @@
+#!/bin/sh
+# Nifty-Intra-OI changes must ship with the user guide and its generated .docx.
+# Enabled by: git config core.hooksPath .githooks   (see CLAUDE.md)
+# Bypass for a genuine doc-irrelevant commit: git commit --no-verify
+guide=Nifty-Intra-OI/SD-X_v11_User_Guide
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+src=$(echo "$staged" | grep '^Nifty-Intra-OI/' | grep -v "^$guide\." | grep -v '\.png$')
+[ -z "$src" ] && exit 0
+
+fail() { echo "pre-commit: $1" >&2; exit 1; }
+
+echo "$staged" | grep -qx "$guide.md"  || fail "$src
+  changed but $guide.md is not staged. Update the guide in the same commit."
+
+# Regenerate and compare: a stale .docx is worse than no .docx.
+command -v pandoc >/dev/null || fail "pandoc not found; cannot verify $guide.docx"
+tmp=$(mktemp -d)
+git show ":$guide.md" > "$tmp/g.md" || fail "cannot read staged $guide.md"
+(cd "$(dirname "$guide")" && pandoc "$tmp/g.md" -o "$tmp/g.docx") || fail "pandoc failed"
+# .docx is a zip with timestamps, so compare extracted document.xml, not bytes.
+doc() { unzip -p "$1" word/document.xml; }
+git show ":$guide.docx" > "$tmp/staged.docx" 2>/dev/null \
+  || fail "$guide.docx is not staged. Run: pandoc $guide.md -o $guide.docx"
+doc "$tmp/staged.docx" > "$tmp/a.xml" && doc "$tmp/g.docx" > "$tmp/b.xml" || fail "cannot read docx"
+cmp -s "$tmp/a.xml" "$tmp/b.xml" \
+  || fail "$guide.docx is stale. Run: pandoc $guide.md -o $guide.docx && git add $guide.docx"
+rm -rf "$tmp"

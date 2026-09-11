@@ -8,8 +8,8 @@ Live NSE data, no TradingView entitlement needed. Stdlib only (tkinter).
 import queue, sys, threading, tkinter as tk
 from tkinter import ttk
 
-from oi_chain import (CE_BULL, PE_BULL, bias_tag, chain, fetch, fmt, front_expiry,
-                      market_live, pcr_tag, rows, sgn, shark_matrix, strike_tag, totals)
+from oi_chain import (CE_BULL, PE_BULL, bias_tag, chain, fetch, fmt, front_expiry, mark,
+                      market_live, pcr_tag, rebase, rows, sgn, shark_matrix, strike_tag, totals)
 
 AUTO = "auto (weekly)"
 
@@ -40,6 +40,9 @@ class App:
         self.root, self.q, self.cells, self.job = root, queue.Queue(), [], None
         self.live = True                          # until a feed timestamp says otherwise
         self.last = None                          # last payload, to redraw without refetching
+        # Intraday baseline: the day's first fetch, or the last press of "mark".
+        # ponytail: no 09:20 auto-mark; start the window at the open or press mark.
+        self.base, self.base_stamp = None, ""
         root.title("SD-X OI — NSE option chain")
         root.configure(bg=BG)
         self.expiries = []
@@ -50,6 +53,7 @@ class App:
         self.auto = tk.BooleanVar(value=autostart)
         self.top = tk.BooleanVar(value=autostart)
         self.shark = tk.BooleanVar(value=False)
+        self.intra = tk.BooleanVar(value=False)   # deltas since the mark, not since yesterday
         self._toolbar()
         self.grid = tk.Frame(root, bg=BG)
         self.grid.pack(padx=8, pady=(0, 4), fill="both", expand=True)
@@ -88,11 +92,14 @@ class App:
             self._lbl(bar, tip, DIM, ("Segoe UI", 8)).pack(side="left")
         for text, var, cmd in (("auto", self.auto, self.refresh),
                                ("on top", self.top, self.on_top),
-                               ("shark", self.shark, self.toggle_shark)):
+                               ("shark", self.shark, self.toggle_shark),
+                               ("intraday", self.intra, self.redraw)):
             tk.Checkbutton(bar, text=text, variable=var, command=cmd, bg=BG, fg=DIM,
                            selectcolor=BG, activebackground=BG, activeforeground=FG,
                            highlightthickness=0).pack(side="left", padx=4)
         tk.Button(bar, text="↻", command=self.refresh, bg=BG, fg=FG, relief="flat",
+                  activebackground=ATM_BG, activeforeground=FG).pack(side="right")
+        tk.Button(bar, text="mark", command=self.remark, bg=BG, fg=DIM, relief="flat",
                   activebackground=ATM_BG, activeforeground=FG).pack(side="right")
 
     def on_top(self):
@@ -105,8 +112,19 @@ class App:
         """Column count changed, so relay the grid - then redraw off the cached
         payload rather than making the user wait on a fetch."""
         self._build(max(1, self.n.get()))
+        self.redraw()
+
+    def redraw(self):
         if self.last:
             self.render(*self.last)
+
+    def remark(self):
+        """Restart the intraday clock from the last payload - e.g. at 09:20 once
+        the opening auction is out of the numbers."""
+        if self.last:
+            self.base, self.base_stamp = mark(self.last[2]), self.last[2].get("timestamp", "")
+            self.intra.set(True)
+            self.redraw()
 
     def _build(self, n):
         """(Re)lay the label grid - one row per strike, 2n+1 rows."""
@@ -175,6 +193,14 @@ class App:
     def render(self, sym, expiry, rec, n):
         spot, atm, rs = rows(rec, n)
         self.last = (sym, expiry, rec, n)
+        stamp = rec.get("timestamp", "")
+        ch = chain(rec)
+        # New day (or first payload): the baseline is this fetch. NSE's stamp is
+        # the day, so an overnight window re-marks itself at the next open.
+        if self.base is None or stamp[:11] != self.base_stamp[:11]:
+            self.base, self.base_stamp = mark(rec), stamp
+        if self.intra.get():
+            rs, ch = rebase(rs, self.base), rebase(ch, self.base)
         if len(self.cells) != len(rs) or (self.cells and len(self.cells[0]) != len(self._cols())):
             self._build(n)
         exps = rec.get("expiryDates") or []
@@ -182,7 +208,7 @@ class App:
             self.expiries = exps
             if list(self.expbox["values"]) != [AUTO] + exps:
                 self.expbox.config(values=[AUTO] + exps)
-        t = totals(chain(rec), spot)                   # Res/Sup/PCR over every strike
+        t = totals(ch, spot)                           # Res/Sup/PCR over every strike
         max_ce, max_pe = t["res"], t["sup"]
         atm_row = next(r for r in rs if r[0] == atm)   # rows() always spans ATM
         lo, hi = rs[0][0], rs[-1][0]
@@ -218,10 +244,10 @@ class App:
                             f"ATM {strike_tag(atm_row[2], atm_row[4], atm_row[7], atm_row[8])}"
                             f"   (whole chain)",
                        fg=DIM)
-        stamp = rec.get("timestamp", "")
         self.live, _ = market_live(stamp)
+        delta = f"Δ since {self.base_stamp[12:17]}" if self.intra.get() else "Δ vs prev close"
         self.status.config(
-            text=f"NSE {stamp}   {'LIVE' if self.live else 'CLOSED — auto-refresh paused'}",
+            text=f"NSE {stamp}   {'LIVE' if self.live else 'CLOSED — auto-refresh paused'}   {delta}",
             fg=GRN if self.live else YEL)
 
 
@@ -278,6 +304,25 @@ def selftest():
     app.toggle_shark()
     assert len(app.cells[0]) == len(COLS), "toggling back must drop the columns"
     assert app.cells[1][7].cget("text") == "PE writing", "base grid survives the round trip"
+
+    # intraday: the first payload is the baseline, so every delta reads flat;
+    # a later payload measures from it, and "mark" moves the baseline forward.
+    assert "Δ vs prev close" in app.status.cget("text"), app.status.cget("text")
+    app.intra.set(True)
+    app.redraw()
+    assert app.cells[1][2].cget("text") == "+0" and app.cells[1][7].cget("text") == "-", \
+        "same payload as the mark: nothing has moved yet"
+    assert "Δ since 15:40" in app.status.cget("text"), app.status.cget("text")
+    rec2 = {**rec, "data": [{"CE": leg(23650, 23650 + 100, 0, 0.8), "PE": leg(23650, 47300, 0, 2.0)}]
+                            + rec["data"][:1] + rec["data"][2:]}
+    app.render("NIFTY", "08-Sep-2026", rec2, 1)
+    assert app.cells[1][2].cget("text") == "+100" and app.cells[1][7].cget("text") == "CE writing", \
+        (app.cells[1][2].cget("text"), app.cells[1][7].cget("text"))
+    app.remark()
+    assert app.cells[1][2].cget("text") == "+0", "mark resets the baseline to the last payload"
+    app.intra.set(False)
+    app.render("NIFTY", "08-Sep-2026", rec, 1)
+    assert app.cells[1][7].cget("text") == "PE writing", "off: NSE's day change is back"
 
     assert app.live is False, "stale 15:40 stamp must read as closed"
     app.auto.set(True)

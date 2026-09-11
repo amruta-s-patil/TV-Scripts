@@ -101,6 +101,8 @@ useZone    = input.bool(true,  "Zone rejection", group = grpE)
 use4Flag   = input.bool(true,  "Whale 4-flag expansion", group = grpE)
 useAbsorb  = input.bool(true,  "Absorption at base / ceiling", group = grpE)
 blockSqz   = input.bool(false, "Block entries while compressed", group = grpE)
+useExpand  = input.bool(true,  "Expansion bar (squeeze release, with bias)", group = grpE)
+expandRR   = input.float(1.5, "Expansion bar R:R (always fixed)", minval = 0.5, step = 0.25, group = grpE)
 
 grpV       = "Volatility regime"
 showVix    = input.bool(true, "Show India VIX regime row", group = grpV)
@@ -335,13 +337,17 @@ f_zones() =>
 bool autoMode = zoneMode == "Auto (near price)"
 bool gapMode  = zoneMode == "Daily gap-adaptive"
 float thick = math.max(minZone, atr)
-float supTop = autoMode ? ta.highest(high, autoN)
+// [1]: the auto zone is what price did BEFORE this bar. With the live bar
+// included, a breakout bar's own high was the supply, so no bar could ever
+// close above it and every long at a new high died at the room stage -
+// 11-Sep-2026 11:12, a 45-point expansion bar the pipeline could not take.
+float supTop = autoMode ? ta.highest(high, autoN)[1]
      : gapMode ? supMainTop : htfSupTop
-float supBot = autoMode ? ta.highest(high, autoN) - thick
+float supBot = autoMode ? ta.highest(high, autoN)[1] - thick
      : gapMode ? math.min(supMainBot, supMainTop - minZone) : math.min(htfSupBot, htfSupTop - minZone)
-float demBot = autoMode ? ta.lowest(low, autoN)
+float demBot = autoMode ? ta.lowest(low, autoN)[1]
      : gapMode ? demMainBot : htfDemBot
-float demTop = autoMode ? ta.lowest(low, autoN) + thick
+float demTop = autoMode ? ta.lowest(low, autoN)[1] + thick
      : gapMode ? math.max(demMainTop, demMainBot + minZone) : math.max(htfDemTop, htfDemBot + minZone)
 
 var array<box> zBoxes = array.new<box>()
@@ -592,7 +598,13 @@ if newDay
 bool hitDem = false
 bool hitSup = false
 if zoneReady and inMkt
-    if close > supBot
+    // Two ways a count dies: price reaches the opposite zone (GTI's "data
+    // neutralised") or closes through the zone itself - a wall that broke held
+    // nothing, so its attacks stop being evidence. Found in the 11-Sep-2026
+    // review: without the second test the count survived a break and a later
+    // bounce could fire off a zone that had already failed. No-op in Auto zone
+    // mode, whose edges trail price and cannot be closed through.
+    if close > supBot or close < demBot
         atkDem := 0
         atkDemHi := na
         atkDemLo := na
@@ -602,7 +614,7 @@ if zoneReady and inMkt
         atkDemHi := high
         atkDemLo := low
         hitDem := true
-    if close < demTop
+    if close < demTop or close > supTop
         atkSup := 0
         atkSupHi := na
         atkSupLo := na
@@ -645,6 +657,19 @@ bool bull3 = bullBar and bullBar[1] and bullBar[2] and isoBull
 bool bear3 = bearBar and bearBar[1] and bearBar[2] and isoBear
 bool bull4 = bull3[1] and bullBar
 bool bear4 = bear3[1] and bearBar
+
+// Expansion bar - the one bar every reversion source is blind to: range
+// expansion with volume, closing near its extreme, in the bias direction,
+// within a few bars of a squeeze. 11-Sep-2026 11:12 came out of "1 Compression"
+// as a 3-bar run (a trap by the flag rule; the 4-flag is one bar later) and
+// touched no zone, level or attack candle. This buys strength where everything
+// else here buys weakness; the bias and squeeze tests are what keep it from
+// chasing every big bar. Stop is the bar's own extreme, so the risk stage
+// still has the final word on a bar that ran too far.
+int   sinceSqz = ta.barssince(squeeze)
+bool  expBar   = rng >= atr * atrExpMult and f_vol(1.0) and sinceSqz <= 3
+bool  expandL  = useExpand and expBar and close > open and close >= high - rng * 0.25 and dayBias ==  1
+bool  expandS  = useExpand and expBar and close < open and close <= low  + rng * 0.25 and dayBias == -1
 
 // Absorption at the edge of the day's structure. Uses SD-X's own zone so it
 // works in every zone mode, not just the gap-adaptive one.
@@ -803,7 +828,7 @@ bool entryOK   = inEntry and (not isExpiry or inExpE)
 bool canSignal = entryOK and inMkt and not forceExit
                  and tradesToday < maxPerDay and (bar_index - lastSigBar) > cooldown
 
-// Five entry sources now, each with its own stop anchor. Order is priority:
+// Six entry sources now, each with its own stop anchor. Order is priority:
 // the tightest structural stop wins when more than one fires on a bar.
 bool sigZoneL = useZone and rejDem
 bool sigZoneS = useZone and rejSup
@@ -815,17 +840,19 @@ bool sigAbsL  = useAbsorb and absorbL
 bool sigAbsS  = useAbsorb and absorbS
 bool sigAtkL  = atkLong
 bool sigAtkS  = atkShort
-bool rawLong  = sigZoneL or sigLvlL or sigFlagL or sigAbsL or sigAtkL
-bool rawShort = sigZoneS or sigLvlS or sigFlagS or sigAbsS or sigAtkS
+bool sigExpL  = expandL
+bool sigExpS  = expandS
+bool rawLong  = sigZoneL or sigLvlL or sigFlagL or sigAbsL or sigAtkL or sigExpL
+bool rawShort = sigZoneS or sigLvlS or sigFlagS or sigAbsS or sigAtkS or sigExpS
 
 float flagLo = ta.lowest(low, 4)                  // hoisted: ta.* must run every bar
 float flagHi = ta.highest(high, 4)
 float lBase = sigZoneL ? demBot : sigLvlL ? lvlLowY
-     : sigFlagL ? flagLo : sigAbsL ? low : sigAtkL ? atkDemLo : na
+     : sigFlagL ? flagLo : sigAbsL ? low : sigAtkL ? atkDemLo : sigExpL ? low : na
 float sBase = sigZoneS ? supTop : sigLvlS ? lvlHighY
-     : sigFlagS ? flagHi : sigAbsS ? high : sigAtkS ? atkSupHi : na
-string lSrc = sigZoneL ? "zone" : sigLvlL ? "level" : sigFlagL ? "4-flag" : sigAbsL ? "absorb" : "attack"
-string sSrc = sigZoneS ? "zone" : sigLvlS ? "level" : sigFlagS ? "4-flag" : sigAbsS ? "absorb" : "attack"
+     : sigFlagS ? flagHi : sigAbsS ? high : sigAtkS ? atkSupHi : sigExpS ? high : na
+string lSrc = sigZoneL ? "zone" : sigLvlL ? "level" : sigFlagL ? "4-flag" : sigAbsL ? "absorb" : sigAtkL ? "attack" : "expand"
+string sSrc = sigZoneS ? "zone" : sigLvlS ? "level" : sigFlagS ? "4-flag" : sigAbsS ? "absorb" : sigAtkS ? "attack" : "expand"
 float lSL = na(lBase) ? na : math.min(lBase, low)  - atr * slBuf
 float sSL = na(sBase) ? na : math.max(sBase, high) + atr * slBuf
 lSL := na(lSL) ? na : math.min(lSL, close - minRisk)
@@ -849,17 +876,28 @@ float sTgt = structTP ? (close > demMainTop ? demMainTop
 // reason to aim through it. Fixed R:R has a wall too - the opposing zone - so
 // the same minRR test runs in every mode, tier or zone edge. 09-Sep-2026 took
 // a 4-flag short 0.3 ATR above demand because roomOK was hardcoded true here.
-bool  lTgtOK = not na(lTgt)
-bool  sTgtOK = not na(sTgt)
-float lWall = lTgtOK ? lTgt : supBot
-float sWall = sTgtOK ? sTgt : demTop
+// The expansion bar never takes a structural target: it has just broken the
+// structure, and the ladder rung it would aim at can sit a dozen points away
+// (11-Sep 11:12: 1:3 rung 13 points above entry). It runs on its own R:R,
+// lower than the reversion sources' - after a 45-point bar on a VIX-12 day,
+// 2R was 85 points more on a session that had ranged 120 all morning.
+bool  lTgtOK = not na(lTgt) and not sigExpL
+bool  sTgtOK = not na(sTgt) and not sigExpS
+// A zone price has already closed through is the breakout, not a wall ahead,
+// so it stops counting as room. Inside it or short of it, it still counts -
+// the 09-Sep short above demand stays blocked. The expansion bar is the one
+// exception: the zone it closes into IS what it is breaking (11-Sep 11:12
+// closed 5 points inside the band), and the next structure is unknown, so
+// it gets fixed R:R with no wall test.
+float lWall = lTgtOK ? lTgt : (close > supTop or sigExpL) ? na : supBot
+float sWall = sTgtOK ? sTgt : (close < demBot or sigExpS) ? na : demTop
 float lRR  = na(lWall) or na(lRisk) or lRisk <= 0 ? na : (lWall - close) / lRisk
 float sRR  = na(sWall) or na(sRisk) or sRisk <= 0 ? na : (close - sWall) / sRisk
 // No zone / no tier yet -> na -> pass, same as before.
 bool roomOKL = na(lRR) or lRR >= minRR
 bool roomOKS = na(sRR) or sRR >= minRR
-float lTP = lTgtOK ? lTgt : close + lRisk * rr
-float sTP = sTgtOK ? sTgt : close - sRisk * rr
+float lTP = lTgtOK ? lTgt : close + lRisk * (sigExpL ? expandRR : rr)
+float sTP = sTgtOK ? sTgt : close - sRisk * (sigExpS ? expandRR : rr)
 
 // Exhaustion lockout and compression are regime vetoes: the setup was real,
 // the tape is just the wrong shape to take it.
@@ -884,6 +922,55 @@ bool blkRegL  = rawLong  and bullFilt and riskOKL and roomOKL and not regimeOKL
 bool blkRegS  = rawShort and bearFilt and riskOKS and roomOKS and not regimeOKS
 bool blkGateL = rawLong  and bullFilt and riskOKL and roomOKL and regimeOKL and not canSignal
 bool blkGateS = rawShort and bearFilt and riskOKS and roomOKS and regimeOKS and not canSignal
+
+// ═══════════════════ Shadow: filter-blocked, bias agrees ═══════════════════
+// Measurement only - nothing here plots, gates or counts against the daily cap.
+// A setup the VWAP/RSI/EMA filter refused while the opening break agreed with
+// it, and which every later stage would have passed, is paper-traded with the
+// real stop and target. The DIAG rows then say whether the "buy-on-dip under
+// VWAP" trade the day bias implies is worth an exception. 11-Sep-2026: six such
+// longs were refused on a day that ran 100 points. One day is not evidence;
+// this row is how the evidence gets collected.
+type Shadow
+    bool  isLong
+    float entry
+    float sl
+    float tp
+var array<Shadow> shadowT = array.new<Shadow>()
+var int   lastShBar = -1000
+var int   cShL = 0, var int cShS = 0
+var int   shWin = 0, var int shLoss = 0
+var float shPts = 0.0
+if newDay
+    cShL := 0
+    cShS := 0
+    shWin := 0
+    shLoss := 0
+    shPts := 0.0
+
+bool shadowL = blkFiltL and dayBias ==  1 and riskOKL and roomOKL and regimeOKL and canSignal
+     and (bar_index - lastShBar) > cooldown
+bool shadowS = blkFiltS and dayBias == -1 and riskOKS and roomOKS and regimeOKS and canSignal
+     and (bar_index - lastShBar) > cooldown
+
+// Same exit rules as a real trade: stop wins a bar that spans both.
+if array.size(shadowT) > 0
+    for i = array.size(shadowT) - 1 to 0
+        Shadow sh = array.get(shadowT, i)
+        bool shSL = sh.isLong ? low  <= sh.sl : high >= sh.sl
+        bool shTP = sh.isLong ? high >= sh.tp : low  <= sh.tp
+        if shSL or shTP or forceExit
+            float ex  = shSL ? sh.sl : shTP ? sh.tp : close
+            float pts = sh.isLong ? ex - sh.entry : sh.entry - ex
+            shPts  += pts
+            shWin  += pts >= 0 ? 1 : 0
+            shLoss += pts <  0 ? 1 : 0
+            array.remove(shadowT, i)
+if inMkt and (shadowL or shadowS)
+    array.push(shadowT, Shadow.new(shadowL, close, shadowL ? lSL : sSL, shadowL ? lTP : sTP))
+    lastShBar := bar_index
+    cShL += shadowL ? 1 : 0
+    cShS += shadowS ? 1 : 0
 
 if inMkt
     cDemT  += demTouch ? 1 : 0
@@ -978,7 +1065,7 @@ if showStats and barstate.islast
 float demDistATR = zoneReady ? math.abs(close - demTop) / atr : na
 float supDistATR = zoneReady ? math.abs(supBot - close) / atr : na
 
-var table dg = table.new(position.bottom_right, 3, 11, border_width = 1)
+var table dg = table.new(position.bottom_right, 3, 13, border_width = 1)
 if showDiag and barstate.islast
     table.cell(dg, 0, 0, "DIAG today", text_color = color.white, bgcolor = color.new(color.gray, 20), text_size = size.tiny)
     table.cell(dg, 1, 0, "L", text_color = color.white, bgcolor = color.new(color.gray, 20), text_size = size.tiny)
@@ -1013,6 +1100,12 @@ if showDiag and barstate.islast
     table.cell(dg, 0, 10, "Zone / VWAP / RSI", text_size = size.tiny)
     table.cell(dg, 1, 10, str.tostring(demBot, "#") + "-" + str.tostring(demTop, "#"), text_size = size.tiny)
     table.cell(dg, 2, 10, str.tostring(vwapV, "#") + " / " + str.tostring(rsiV, "#"), text_size = size.tiny)
+    table.cell(dg, 0, 11, "Shadow: bias-only", text_size = size.tiny)
+    table.cell(dg, 1, 11, str.tostring(cShL), text_color = color.gray, text_size = size.tiny)
+    table.cell(dg, 2, 11, str.tostring(cShS), text_color = color.gray, text_size = size.tiny)
+    table.cell(dg, 0, 12, "Shadow W / L / pts", text_size = size.tiny)
+    table.cell(dg, 1, 12, str.tostring(shWin) + " / " + str.tostring(shLoss), text_color = color.gray, text_size = size.tiny)
+    table.cell(dg, 2, 12, str.tostring(shPts, "#.#"), text_color = shPts >= 0 ? color.green : color.red, text_size = size.tiny)
 
 // ═══════════════════ Alerts ═══════════════════
 alertcondition(longSig,  "SD-X Buy CE", "BUY ATM CE — index {{close}}")
@@ -1027,5 +1120,7 @@ alertcondition(absorbS, "SD-X Absorption at ceiling", "Absorption wick at the ce
 alertcondition(orbReady and dayBias != 0 and dayBias[1] == 0, "SD-X Opening break", "Opening candle broken — day bias is set")
 alertcondition(atkLong,  "SD-X Zone attack long",  "Demand held its Nth attack — break of the last black candle")
 alertcondition(atkShort, "SD-X Zone attack short", "Supply held its Nth attack — break of the last blue candle")
+alertcondition(expandL, "SD-X Expansion long",  "Expansion bar out of a squeeze, with the day bias, closing near its high")
+alertcondition(expandS, "SD-X Expansion short", "Expansion bar out of a squeeze, with the day bias, closing near its low")
 alertcondition(ladderHitU and not ladderHitU[1], "SD-X Ladder 1:N up", "Opening-range ladder target reached to the upside")
 alertcondition(ladderHitD and not ladderHitD[1], "SD-X Ladder 1:N down", "Opening-range ladder target reached to the downside")
